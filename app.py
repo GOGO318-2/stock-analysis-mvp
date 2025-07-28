@@ -10,24 +10,6 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="股票分析MVP", layout="wide")
 
-# Mobile optimization CSS
-st.markdown("""
-<style>
-    [data-testid="column"] {
-        min-width: 0 !important;
-    }
-    .stButton > button {
-        width: 100%;
-    }
-    .stNumberInput > div {
-        width: 100%;
-    }
-    .stSelectbox > div {
-        width: 100%;
-    }
-</style>
-""", unsafe_allow_html=True)
-
 st.sidebar.title("股票分析器")
 st.sidebar.markdown("支持港股：输入如0700（自动加.HK）")
 ticker_input = st.sidebar.text_input("输入股票代码 (例如, AAPL 或 0700)", value="TSLA").upper()
@@ -87,20 +69,20 @@ def get_news(ticker):
             return filtered_news[:5]
     except:
         pass
-    # Fallback to Investing.com
+    # Fallback to Yahoo Finance news
     try:
-        url = f"https://cn.investing.com/equities/{ticker}-news"
+        url = f"https://finance.yahoo.com/quote/{ticker}/news"
         response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
         soup = BeautifulSoup(response.text, 'html.parser')
-        news_items = soup.find_all('article', class_='js-article-item')
+        news_items = soup.find_all('li', class_='js-stream-content')
         news_list = []
         for item in news_items[:5]:
-            title_tag = item.find('a', class_='title')
+            title_tag = item.find('h3')
             title = title_tag.text.strip() if title_tag else ''
-            link = 'https://cn.investing.com' + title_tag['href'] if title_tag else ''
-            date_tag = item.find('time')
-            date = date_tag['datetime'] if date_tag else ''
-            if title and datetime.fromisoformat(date.replace('Z', '+00:00')) >= one_month_ago:
+            link = 'https://finance.yahoo.com' + title_tag.find('a')['href'] if title_tag else ''
+            date_tag = item.find('span', class_='s-time')
+            date = date_tag.text.strip() if date_tag else ''
+            if title:
                 news_list.append({'title': title, 'link': link, 'publish_date': date})
         return news_list
     except:
