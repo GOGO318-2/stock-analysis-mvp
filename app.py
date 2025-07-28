@@ -11,12 +11,16 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="股票分析MVP", layout="wide")
 
 st.sidebar.title("股票分析器")
-st.sidebar.markdown("支持港股：输入如0700（自动加.HK）")
-ticker_input = st.sidebar.text_input("输入股票代码 (例如, AAPL 或 0700)", value="TSLA").upper()
+st.sidebar.markdown("支持港股：输入如0700")
+ticker_input = st.sidebar.text_input("输入股票代码 (例如, TSLA 或 0700)", value="TSLA").upper()
 
-# 自动添加.HK for港股
-if ticker_input.isdigit() and 1 <= len(ticker_input) <= 5 and not ticker_input.endswith('.HK'):
-    ticker = ticker_input + '.HK'
+# 自动添加.HK for港股, 去除leading zero
+if ticker_input.isdigit():
+    ticker_clean = ticker_input.lstrip('0')
+    if 1 <= len(ticker_clean) <= 5:
+        ticker = ticker_clean + '.HK'
+    else:
+        ticker = ticker_input
 else:
     ticker = ticker_input
 
@@ -42,7 +46,7 @@ def get_stock_data(ticker):
         recommendations = stock.recommendations_summary if not stock.recommendations.empty else pd.DataFrame()
         return info, recommendations
     except Exception as e:
-        st.warning(f"数据拉取失败: {e}. 该股可能新上市或数据滞后。")
+        st.error(f"数据拉取失败: {e}. 请检查代码或网络。")
         return {}, pd.DataFrame()
 
 @st.cache_data
@@ -55,7 +59,7 @@ def get_historical_data(ticker, period):
         else:
             return pd.DataFrame()
     except Exception as e:
-        st.warning(f"历史数据拉取失败: {e}. 该股可能新上市或数据滞后。")
+        st.error(f"历史数据拉取失败: {e}.")
         return pd.DataFrame()
 
 def get_news(ticker):
@@ -356,7 +360,5 @@ elif page == "投资建议":
                 date = item.get('publish_date', '')
                 if title:
                     st.markdown(f"- [{title}]({link}) ({date})")
-        else:
-            st.warning("暂无最新资讯。")
     else:
         st.error("请输入股票代码。")
