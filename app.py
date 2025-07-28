@@ -4,12 +4,12 @@ import pandas as pd
 import plotly.graph_objects as go
 import json
 import numpy as np
-import datetime  # 新增：用于时间计算
+import datetime
 
 # 你的API Key
 FINNHUB_KEY = 'd1p1qv9r01qi9vk2517gd1p1qv9r01qi9vk25180'
 FMP_KEY = '8n2nsHP2Lj1uHkPRrtcQ8a63Lf95VjbU'
-POLYGON_KEY = '2CDgF277xEhkhKndj5yFMVONxBGFFShg'  # 保留，但不用于历史
+POLYGON_KEY = '2CDgF277xEhkhKndj5yFMVONxBGFFShg'  # 备用
 
 st.set_page_config(page_title="股票分析MVP", layout="wide")
 
@@ -20,24 +20,20 @@ ticker = st.sidebar.text_input("输入股票代码 (例如, AAPL 或 0700.HK)", 
 @st.cache_data
 def get_real_time_quote(ticker):
     url = f"https://finnhub.io/api/v1/quote?symbol={ticker}&token={FINNHUB_KEY}"
-    response = requests.get(url)
-    return response.json()
+    return requests.get(url).json()
 
 @st.cache_data
 def get_fundamentals(ticker):
     url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={FMP_KEY}"
-    response = requests.get(url)
-    return response.json()[0] if response.json() else {}
+    return requests.get(url).json()[0] if requests.get(url).json() else {}
 
 @st.cache_data
 def get_key_metrics(ticker):
     url = f"https://financialmodelingprep.com/api/v3/key-metrics/{ticker}?period=annual&apikey={FMP_KEY}"
-    response = requests.get(url)
-    return response.json()[0] if response.json() else {}
+    return requests.get(url).json()[0] if requests.get(url).json() else {}
 
 @st.cache_data
 def get_historical_data(ticker, days=30):
-    # 使用Finnhub历史蜡烛图，支持港股
     to_date = datetime.date.today()
     from_date = to_date - datetime.timedelta(days=days)
     from_unix = int(datetime.datetime.combine(from_date, datetime.time()).timestamp())
@@ -55,14 +51,17 @@ def get_historical_data(ticker, days=30):
         })
         df.set_index('日期', inplace=True)
         return df
-    else:
-        return pd.DataFrame()  # 空DataFrame处理错误
+    return pd.DataFrame()
 
 @st.cache_data
 def get_news(ticker):
     url = f"https://finnhub.io/api/v1/company-news?symbol={ticker}&from=2025-07-27&to=2025-07-28&token={FINNHUB_KEY}"
-    response = requests.get(url)
-    return response.json()[:3]
+    return requests.get(url).json()[:3]
+
+@st.cache_data
+def get_recommendations(ticker):
+    url = f"https://finnhub.io/api/v1/stock/recommendation?symbol={ticker}&token={FINNHUB_KEY}"
+    return requests.get(url).json()[0] if requests.get(url).json() else {}  # 取最新
 
 def calculate_rsi(close, period=14):
     delta = close.diff()
@@ -70,14 +69,14 @@ def calculate_rsi(close, period=14):
     loss = -delta.where(delta < 0, 0).rolling(window=period).mean()
     rs = gain / loss
     rsi = 100 - (100 / (1 + rs))
-    return rsi.iloc[-1] if not rsi.empty else 'N/A'
+    return rsi.iloc[-1] if not rsi.empty else 50  # 默认中性
 
 def calculate_macd(close, short=12, long=26, signal=9):
     ema_short = close.ewm(span=short, adjust=False).mean()
     ema_long = close.ewm(span=long, adjust=False).mean()
     macd_line = ema_short - ema_long
     signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    return macd_line.iloc[-1], signal_line.iloc[-1] if not macd_line.empty else ('N/A', 'N/A')
+    return macd_line.iloc[-1], signal_line.iloc[-1] if not macd_line.empty else (0, 0)
 
 pages = ["首页", "基本面", "警报", "投资建议"]
 page = st.sidebar.radio("导航", pages)
@@ -105,7 +104,7 @@ if page == "首页":
             col2.metric("今日最高", f"${quote.get('h', 'N/A'):.2f}")
             col3.metric("今日最低", f"${quote.get('l', 'N/A'):.2f}")
         else:
-            st.error("无效代码或无数据（检查API限额）。")
+            st.error("无效代码或无数据。")
 
 elif page == "基本面":
     st.title(f"{ticker} 基本面")
@@ -159,26 +158,45 @@ elif page == "投资建议":
         metrics = get_key_metrics(ticker)
         hist = get_historical_data(ticker)
         news = get_news(ticker)
+        rec = get_recommendations(ticker)
         
         current_price = quote.get('c', 0)
         pe = metrics.get('peRatio', 0)
         eps = metrics.get('netIncomePerShare', 0)
         rsi = calculate_rsi(hist['收盘'])
         macd, _ = calculate_macd(hist['收盘'])
+        buy_rating = rec.get('buy', 0)  # 买推荐数
+        sell_rating = rec.get('sell', 0)  # 卖推荐数
+        target_price = rec.get('targetPrice', current_price * 1.1)  # 默认上行10%
+        support = current_price * 0.95
+        resistance = current_price * 1.05
+        news_sentiment = "正面" if any('positive' in item.get('headline', '').lower() for item in news) else ("负面" if any('negative' in item.get('headline', '').lower() for item in news) else "中性")
         
-        # 表格数据：短期、趋势、波段
+        # 动态生成备注
+        short_memo = f"RSI {rsi:.0f}表示{('超卖反弹' if rsi < 40 else '超买回调' if rsi > 60 else '稳定波动')}，关注成交量放大，风险{news_sentiment}情绪。"
+        trend_memo = f"PE {pe:.1f}支持长期{('增长' if buy_rating > sell_rating else '谨慎')}，ROE稳定，持仓3-6月忽略波动。"
+        swing_memo = f"MACD {macd:.2f}交叉，波段捕捉{('上涨' if macd > 0 else '下行')}机会，分批操作，X情绪{news_sentiment}。"
+        
+        # 动态触发电号和仓位
+        short_trigger = f"RSI<40且MACD金叉" if rsi < 50 else f"RSI>60或MA5死叉"
+        trend_trigger = f"MA20上穿且ROE>20%" if buy_rating > sell_rating else f"跌破支持位{support:.0f}"
+        swing_trigger = f"MACD正向交叉且成交量>平均" if macd > 0 else f"突破阻力{resistance:.0f}或跌破MA20"
+        short_pos = "60%" if rsi < 40 else "减仓40%"
+        trend_pos = "加仓40%" if buy_rating > sell_rating else "清仓"
+        swing_pos = "70%" if macd > 0 else "减仓50%"
+        
         data = [
-            {"阶段": "短期交易 (日内/短期)", "时机": "入场", "价位": f"{round(current_price * 0.98, 2)}-{round(current_price * 1.02, 2)}", "触发电号": "RSI<40且MACD金叉", "仓位": "60%", "备忘": "分批买入，每批0.5张。持仓1-3天，关注成交量放大。"},
-            {"阶段": "短期交易 (日内/短期)", "时机": "止盈", "价位": f"{round(current_price * 1.05, 2)}", "触发电号": "RSI>60或MA5死叉", "仓位": "减仓40%", "备忘": "无量冲高减仓，目标区间5-10%。"},
-            {"阶段": "趋势交易 (长期)", "时机": "入场", "价位": f"{round(current_price * 0.95, 2)}-{current_price}", "触发电号": "MA20上穿且ROE>30%", "仓位": "加仓40%", "备忘": "长期持仓，忽略短期波动。目标1100+，持仓3-6月。"},
-            {"阶段": "趋势交易 (长期)", "时机": "止损", "价位": f"{round(current_price * 0.90, 2)}", "触发电号": "跌破支持位907", "仓位": "清仓", "备忘": "如果新闻负面，快速止损。"},
-            {"阶段": "波段交易 (中短期)", "时机": "入场", "价位": f"{round(current_price * 0.97, 2)}-{round(current_price * 1.03, 2)}", "触发电号": "MACD正向交叉且成交量>平均", "仓位": "70%", "备忘": "波段捕捉，持仓1-4周。分两批，关注X情绪72%正面。"},
-            {"阶段": "波段交易 (中短期)", "时机": "止盈/止损", "价位": f"{round(current_price * 1.10, 2)} / {round(current_price * 0.92, 2)}", "触发电号": "突破阻力1225或跌破MA20", "仓位": "减仓50%", "备忘": "目标区间10-15%，风险包括tech卖压。"}
+            {"阶段": "短期交易 (日内/短期)", "时机": "入场", "价位": f"{support:.0f}-{current_price:.0f}", "触发电号": short_trigger, "仓位": short_pos, "备忘": short_memo},
+            {"阶段": "短期交易 (日内/短期)", "时机": "止盈", "价位": f"{resistance:.0f}", "触发电号": short_trigger, "仓位": short_pos, "备忘": short_memo},
+            {"阶段": "趋势交易 (长期)", "时机": "入场", "价位": f"{support:.0f}-{current_price:.0f}", "触发电号": trend_trigger, "仓位": trend_pos, "备忘": trend_memo},
+            {"阶段": "趋势交易 (长期)", "时机": "止损", "价位": f"{support * 0.95:.0f}", "触发电号": trend_trigger, "仓位": trend_pos, "备忘": trend_memo},
+            {"阶段": "波段交易 (中短期)", "时机": "入场", "价位": f"{support:.0f}-{resistance:.0f}", "触发电号": swing_trigger, "仓位": swing_pos, "备忘": swing_memo},
+            {"阶段": "波段交易 (中短期)", "时机": "止盈/止损", "价位": f"{target_price:.0f} / {support:.0f}", "触发电号": swing_trigger, "仓位": swing_pos, "备忘": swing_memo}
         ]
         df = pd.DataFrame(data)
         st.table(df)
         
-        st.markdown("<span style='color:red'>重点: RSI超卖建议短期买入，支持位907，目标1101。非投资建议，请咨询专业人士。</span>", unsafe_allow_html=True)
+        st.markdown(f"<span style='color:red'>重点: RSI{rsi:.0f}建议{('买入' if rsi < 40 else '卖出' if rsi > 60 else '持仓')}，目标{target_price:.0f}。非投资建议。</span>", unsafe_allow_html=True)
         
         st.subheader("最新新闻（影响情绪）")
         for item in news:
