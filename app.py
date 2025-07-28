@@ -21,13 +21,22 @@ def get_stock_data(ticker):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        hist = stock.history(period="1mo")
-        news = stock.news[:3]
+        news = stock.news[:3] if stock.news else []
         recommendations = stock.recommendations_summary if not stock.recommendations.empty else pd.DataFrame()
-        return info, hist, news, recommendations
+        return info, news, recommendations
     except Exception as e:
         st.error(f"数据拉取失败: {e}. 请检查代码或网络。")
-        return {}, pd.DataFrame(), [], pd.DataFrame()
+        return {}, [], pd.DataFrame()
+
+@st.cache_data
+def get_historical_data(ticker, period):
+    try:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period=period)
+        return hist
+    except Exception as e:
+        st.error(f"历史数据拉取失败: {e}.")
+        return pd.DataFrame()
 
 def calculate_rsi(close, period=14):
     try:
@@ -53,12 +62,23 @@ def calculate_macd(close, short=12, long=26, signal=9):
 pages = ["首页", "基本面", "警报", "投资建议"]
 page = st.sidebar.radio("导航", pages)
 
-info, hist, news, rec = get_stock_data(ticker)
+info, news, rec = get_stock_data(ticker)
 
 currency = info.get('currency', 'USD')  # 自动货币
 
 if page == "首页":
     st.title(f"{ticker} 股票仪表板")
+    period_options = {
+        "1日": "1d",
+        "5日": "5d",
+        "日K": "1mo",
+        "周K": "3mo",
+        "月K": "1y",
+        "季K": "5y"
+    }
+    selected_label = st.selectbox("选择时间范围", list(period_options.keys()), index=0)
+    selected_period = period_options[selected_label]
+    hist = get_historical_data(ticker, selected_period)
     if not hist.empty:
         fig = go.Figure(data=[go.Candlestick(x=hist.index,
                                             open=hist['Open'], high=hist['High'],
@@ -68,7 +88,7 @@ if page == "首页":
         ma20 = hist['Close'].rolling(window=20).mean()
         fig.add_trace(go.Scatter(x=hist.index, y=ma5, mode='lines', name='MA5 (短期)', line=dict(color='blue')))
         fig.add_trace(go.Scatter(x=hist.index, y=ma20, mode='lines', name='MA20 (长期)', line=dict(color='orange')))
-        fig.update_layout(title=f"{ticker} 本周K线图（可拖拽查看细节）", xaxis_title="日期", yaxis_title="价格",
+        fig.update_layout(title=f"{ticker} {selected_label}K线图（可拖拽查看细节）", xaxis_title="日期", yaxis_title="价格",
                           xaxis_rangeslider_visible=True, xaxis_tickformat='%Y年%m月%d日')
         st.plotly_chart(fig, use_container_width=True)
         
@@ -85,6 +105,7 @@ if page == "首页":
 elif page == "基本面":
     st.title(f"{ticker} 基本面")
     if info:
+        hist = get_historical_data(ticker, "1mo")
         rsi = calculate_rsi(hist['Close'])
         macd, signal = calculate_macd(hist['Close'])
         avg_volume = hist['Volume'].mean() if 'Volume' in hist else 'N/A'
@@ -118,6 +139,7 @@ elif page == "警报":
 elif page == "投资建议":
     st.title(f"{ticker} 当天投资建议 (2025-07-28)")
     if info:
+        hist = get_historical_data(ticker, "1mo")
         current_price = info.get('currentPrice', 0)
         pe = info.get('trailingPE', 0)
         eps = info.get('trailingEps', 0)
@@ -154,11 +176,12 @@ elif page == "投资建议":
         
         st.markdown(f"<span style='color:red'>重点: RSI{rsi:.0f}建议{('买入' if rsi < 40 else '卖出' if rsi > 60 else '持仓')}，目标{target_price:.0f}。非投资建议。</span>", unsafe_allow_html=True)
         
-        st.subheader("最新新闻（影响情绪）")
-        for item in news:
-            title = item.get('title', '无标题')
-            link = item.get('link', '')
-            date = item.get('publish_date', '')
-            st.markdown(f"- [{title}]({link}) ({date})")
+        if news:
+            st.subheader("最新新闻（影响情绪）")
+            for item in news:
+                title = item.get('title', '无标题')
+                link = item.get('link', '')
+                date = item.get('publish_date', '')
+                st.markdown(f"- [{title}]({link}) ({date})")
     else:
         st.error("请输入股票代码。")
