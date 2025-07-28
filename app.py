@@ -3,7 +3,9 @@ import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
 import yfinance as yf
-import time  # for refresh
+import time
+import requests
+from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="股票分析MVP", layout="wide")
 
@@ -12,7 +14,7 @@ st.sidebar.markdown("支持港股：输入如0700（自动加.HK）")
 ticker_input = st.sidebar.text_input("输入股票代码 (例如, AAPL 或 0700)", value="AAPL").upper()
 
 # 自动添加.HK for港股
-if ticker_input.isdigit() and len(ticker_input) == 4:
+if ticker_input.isdigit() and 1 <= len(ticker_input) <= 5:
     ticker = ticker_input + '.HK'
 else:
     ticker = ticker_input
@@ -22,12 +24,11 @@ def get_stock_data(ticker):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        news = stock.news[:3]
         recommendations = stock.recommendations_summary if not stock.recommendations.empty else pd.DataFrame()
-        return info, news, recommendations
+        return info, recommendations
     except Exception as e:
         st.error(f"数据拉取失败: {e}. 请检查代码或网络。")
-        return {}, [], pd.DataFrame()
+        return {}, pd.DataFrame()
 
 @st.cache_data
 def get_historical_data(ticker, period):
@@ -41,6 +42,30 @@ def get_historical_data(ticker, period):
     except Exception as e:
         st.error(f"历史数据拉取失败: {e}.")
         return pd.DataFrame()
+
+@st.cache_data
+def get_news(ticker, currency):
+    try:
+        if currency == 'HKD':
+            url = f"https://www.futunn.com/stock/{ticker}-news"
+        else:
+            url = f"https://www.futunn.com/en/stock/{ticker}-news"
+        response = requests.get(url)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        news_items = soup.find_all('li', class_='news-item')  # Futu news class
+        news_list = []
+        for item in news_items[:3]:
+            title_tag = item.find('a', class_='title')
+            title = title_tag.text.strip() if title_tag else ''
+            link = title_tag['href'] if title_tag else ''
+            date_tag = item.find('span', class_='time')
+            date = date_tag.text.strip() if date_tag else ''
+            if title and link:
+                news_list.append({'title': title, 'link': link, 'date': date})
+        return news_list
+    except Exception as e:
+        st.error(f"资讯拉取失败: {e}.")
+        return []
 
 def calculate_rsi(close, period=14):
     try:
@@ -66,7 +91,7 @@ def calculate_macd(close, short=12, long=26, signal=9):
 pages = ["首页", "基本面", "警报", "投资建议"]
 page = st.sidebar.radio("导航", pages)
 
-info, news, rec = get_stock_data(ticker)
+info, rec = get_stock_data(ticker)
 
 currency = info.get('currency', 'USD')  # 自动货币
 company_name = info.get('longName', ticker) or ticker
@@ -137,11 +162,14 @@ if page == "首页":
             post_market_change = info.get('postMarketChange', 0)
             current_change = current_price - st.session_state.prev_current if isinstance(current_price, (int, float)) else 0
             
+            pre_delta_color = "normal" if pre_market_change >= 0 else "inverse"
+            post_delta_color = "normal" if post_market_change >= 0 else "inverse"
+            
             col4, col5, col6, col7 = st.columns(4)
             col4.metric("盘前价格", f"{pre_market_price:.2f} {currency}" if isinstance(pre_market_price, (int, float)) else pre_market_price)
-            col5.metric("盘前变化", f"{pre_market_change:.2f}" if isinstance(pre_market_change, (int, float)) else pre_market_change, delta_color="normal" if pre_market_change >= 0 else "inverse")
+            col5.metric("盘前变化", f"{pre_market_change:.2f}" if isinstance(pre_market_change, (int, float)) else pre_market_change, delta_color=pre_delta_color)
             col6.metric("盘后价格", f"{post_market_price:.2f} {currency}" if isinstance(post_market_price, (int, float)) else post_market_price)
-            col7.metric("盘后变化", f"{post_market_change:.2f}" if isinstance(post_market_change, (int, float)) else post_market_change, delta_color="normal" if post_market_change >= 0 else "inverse")
+            col7.metric("盘后变化", f"{post_market_change:.2f}" if isinstance(post_market_change, (int, float)) else post_market_change, delta_color=post_delta_color)
             
             # 自动刷新每60s
             time.sleep(60)
@@ -237,13 +265,10 @@ elif page == "投资建议":
         
         st.markdown(f"<span style='color:red'>重点: RSI{rsi:.0f}建议{('买入' if rsi < 40 else '卖出' if rsi > 60 else '持仓')}，目标{target_price:.0f}。非投资建议。</span>", unsafe_allow_html=True)
         
-        if news:
+        news_list = get_news(ticker, currency)
+        if news_list:
             st.subheader("最新资讯（影响情绪）")
-            for item in news:
-                title = item.get('title', '')
-                link = item.get('link', '')
-                date = item.get('publish_date', '')
-                if title:
-                    st.markdown(f"- [{title}]({link}) ({date})")
+            for item in news_list:
+                st.markdown(f"- [{item['title']}]({item['link']}) ({item['date']})")
     else:
         st.error("请输入股票代码。")
