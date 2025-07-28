@@ -4,6 +4,8 @@ import plotly.graph_objects as go
 import numpy as np
 import yfinance as yf
 import time
+import requests
+from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="股票分析MVP", layout="wide")
 
@@ -16,6 +18,20 @@ if ticker_input.isdigit() and 1 <= len(ticker_input) <= 5 and not ticker_input.e
     ticker = ticker_input + '.HK'
 else:
     ticker = ticker_input
+
+# Watchlist
+if 'watchlist' not in st.session_state:
+    st.session_state.watchlist = []
+if st.button("添加到watchlist"):
+    if ticker not in st.session_state.watchlist:
+        st.session_state.watchlist.append(ticker)
+        st.success("添加成功！")
+st.sidebar.subheader("Watchlist")
+for wl_ticker in st.session_state.watchlist:
+    st.sidebar.text(wl_ticker)
+    if st.sidebar.button(f"移除 {wl_ticker}", key=wl_ticker):
+        st.session_state.watchlist.remove(wl_ticker)
+        st.rerun()
 
 @st.cache_data
 def get_stock_data(ticker):
@@ -42,6 +58,16 @@ def get_historical_data(ticker, period):
         st.error(f"历史数据拉取失败: {e}.")
         return pd.DataFrame()
 
+def get_fed_rate():
+    try:
+        url = "https://www.federalreserve.gov/monetarypolicy/fomc.htm"
+        response = requests.get(url)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        rate_text = soup.find(text="Target range for the federal funds rate").find_next('p').text.strip()
+        return rate_text
+    except:
+        return "无法获取Fed利率。"
+
 def calculate_rsi(close, period=14):
     try:
         delta = close.diff()
@@ -62,6 +88,48 @@ def calculate_macd(close, short=12, long=26, signal=9):
         return macd_line.iloc[-1], signal_line.iloc[-1] if not macd_line.empty else (0, 0)
     except:
         return 0, 0
+
+def calculate_bollinger_bands(close, window=20, std_dev=2):
+    try:
+        rolling_mean = close.rolling(window=window).mean()
+        rolling_std = close.rolling(window=window).std()
+        upper_band = rolling_mean + (rolling_std * std_dev)
+        lower_band = rolling_mean - (rolling_std * std_dev)
+        return upper_band, rolling_mean, lower_band
+    except:
+        return pd.Series(), pd.Series(), pd.Series()
+
+def calculate_stochastic(close, high, low, period=14):
+    try:
+        l14 = low.rolling(window=period).min()
+        h14 = high.rolling(window=period).max()
+        k = 100 * ((close - l14) / (h14 - l14))
+        return k.iloc[-1] if not k.empty else 50
+    except:
+        return 50
+
+def backtest_ma_crossover(hist):
+    try:
+        ma5 = hist['Close'].rolling(5).mean()
+        ma20 = hist['Close'].rolling(20).mean()
+        signals = pd.DataFrame(index=hist.index)
+        signals['signal'] = 0.0
+        signals['signal'][ma5 > ma20] = 1.0
+        signals['signal'][ma5 < ma20] = -1.0
+        signals['positions'] = signals['signal'].diff()
+        returns = hist['Close'].pct_change() * signals['signal'].shift(1)
+        win_rate = (returns > 0).mean() * 100 if not returns.empty else 0
+        return win_rate
+    except:
+        return 0
+
+def get_x_sentiment(ticker):
+    try:
+        # 模拟x_semantic_search,实际工具调用
+        sentiment = "中性"  # placeholder
+        return sentiment
+    except:
+        return "中性"
 
 pages = ["首页", "基本面", "警报", "投资建议"]
 page = st.sidebar.radio("导航", pages)
@@ -94,6 +162,16 @@ if page == "首页":
         ma20 = hist['Close'].rolling(window=20).mean()
         fig.add_trace(go.Scatter(x=hist.index, y=ma5, mode='lines', name='MA5 (短期)', line=dict(color='blue')))
         fig.add_trace(go.Scatter(x=hist.index, y=ma20, mode='lines', name='MA20 (长期)', line=dict(color='orange')))
+        
+        if st.checkbox("显示布林带"):
+            upper, middle, lower = calculate_bollinger_bands(hist['Close'])
+            fig.add_trace(go.Scatter(x=hist.index, y=upper, mode='lines', name='Upper BB', line=dict(color='red', dash='dash')))
+            fig.add_trace(go.Scatter(x=hist.index, y=lower, mode='lines', name='Lower BB', line=dict(color='green', dash='dash')))
+        
+        if st.checkbox("显示随机振荡器"):
+            stochastic = calculate_stochastic(hist['Close'], hist['High'], hist['Low'])
+            st.text(f"Stochastic: {stochastic:.2f}")
+
         fig.update_layout(title=f"{ticker} {selected_label}K线图（可拖拽查看细节）", xaxis_title="日期", yaxis_title="价格",
                           xaxis_rangeslider_visible=True, xaxis_tickformat='%Y年%m月%d日')
         st.plotly_chart(fig, use_container_width=True)
