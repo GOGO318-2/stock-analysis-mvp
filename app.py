@@ -4,8 +4,6 @@ import plotly.graph_objects as go
 import numpy as np
 import yfinance as yf
 import time
-import requests
-from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="股票分析MVP", layout="wide")
 
@@ -14,7 +12,7 @@ st.sidebar.markdown("支持港股：输入如0700（自动加.HK）")
 ticker_input = st.sidebar.text_input("输入股票代码 (例如, AAPL 或 0700)", value="AAPL").upper()
 
 # 自动添加.HK for港股
-if ticker_input.isdigit() and 1 <= len(ticker_input) <= 5:
+if ticker_input.isdigit() and 1 <= len(ticker_input) <= 5 and not ticker_input.endswith('.HK'):
     ticker = ticker_input + '.HK'
 else:
     ticker = ticker_input
@@ -24,11 +22,12 @@ def get_stock_data(ticker):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
+        news = stock.news[:3] if stock.news else []
         recommendations = stock.recommendations_summary if not stock.recommendations.empty else pd.DataFrame()
-        return info, recommendations
+        return info, news, recommendations
     except Exception as e:
         st.error(f"数据拉取失败: {e}. 请检查代码或网络。")
-        return {}, pd.DataFrame()
+        return {}, [], pd.DataFrame()
 
 @st.cache_data
 def get_historical_data(ticker, period):
@@ -42,30 +41,6 @@ def get_historical_data(ticker, period):
     except Exception as e:
         st.error(f"历史数据拉取失败: {e}.")
         return pd.DataFrame()
-
-@st.cache_data
-def get_news(ticker, currency):
-    try:
-        if currency == 'HKD':
-            url = f"https://www.futunn.com/stock/{ticker}-news"
-        else:
-            url = f"https://www.futunn.com/en/stock/{ticker}-news"
-        response = requests.get(url)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        news_items = soup.find_all('li', class_='news-item')  # Futu news class
-        news_list = []
-        for item in news_items[:3]:
-            title_tag = item.find('a', class_='title')
-            title = title_tag.text.strip() if title_tag else ''
-            link = title_tag['href'] if title_tag else ''
-            date_tag = item.find('span', class_='time')
-            date = date_tag.text.strip() if date_tag else ''
-            if title and link:
-                news_list.append({'title': title, 'link': link, 'date': date})
-        return news_list
-    except Exception as e:
-        st.error(f"资讯拉取失败: {e}.")
-        return []
 
 def calculate_rsi(close, period=14):
     try:
@@ -91,7 +66,7 @@ def calculate_macd(close, short=12, long=26, signal=9):
 pages = ["首页", "基本面", "警报", "投资建议"]
 page = st.sidebar.radio("导航", pages)
 
-info, rec = get_stock_data(ticker)
+info, news, rec = get_stock_data(ticker)
 
 currency = info.get('currency', 'USD')  # 自动货币
 company_name = info.get('longName', ticker) or ticker
@@ -152,6 +127,7 @@ if page == "首页":
                     except:
                         st.error("刷新失败，请重试。")
                 st.session_state.last_refresh = time.time()
+                st.rerun()
             
             last_refresh_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st.session_state.last_refresh))
             st.text(f"最后刷新时间: {last_refresh_time}")
@@ -164,6 +140,7 @@ if page == "首页":
             
             pre_delta_color = "normal" if pre_market_change >= 0 else "inverse"
             post_delta_color = "normal" if post_market_change >= 0 else "inverse"
+            current_delta_color = "normal" if current_change >= 0 else "inverse"
             
             col4, col5, col6, col7 = st.columns(4)
             col4.metric("盘前价格", f"{pre_market_price:.2f} {currency}" if isinstance(pre_market_price, (int, float)) else pre_market_price)
@@ -253,12 +230,12 @@ elif page == "投资建议":
         swing_pos = "70%" if macd > 0 else "减仓50%"
         
         data = [
-            {"阶段": "短期交易 (日内/短期)", "时机": "入场", "价位": f"{support:.0f}-{current_price:.0f}", "触发电号": short_trigger, "仓位": short_pos, "备忘": short_memo},
-            {"阶段": "短期交易 (日内/短期)", "时机": "止盈", "价位": f"{resistance:.0f}", "触发电号": short_trigger, "仓位": short_pos, "备忘": short_memo},
-            {"阶段": "趋势交易 (长期)", "时机": "入场", "价位": f"{support:.0f}-{current_price:.0f}", "触发电号": trend_trigger, "仓位": trend_pos, "备忘": trend_memo},
-            {"阶段": "趋势交易 (长期)", "时机": "止损", "价位": f"{support * 0.95:.0f}", "触发电号": trend_trigger, "仓位": trend_pos, "备忘": trend_memo},
-            {"阶段": "波段交易 (中短期)", "时机": "入场", "价位": f"{support:.0f}-{resistance:.0f}", "触发电号": swing_trigger, "仓位": swing_pos, "备忘": swing_memo},
-            {"阶段": "波段交易 (中短期)", "时机": "止盈/止损", "价位": f"{target_price:.0f} / {support:.0f}", "触发电号": swing_trigger, "仓位": swing_pos, "备忘": swing_memo}
+            {"阶段": "短期交易 (日内/短期)", "时机": "入场", "价位": f"{support:.0f}-{current_price:.0f}", "触发信号": short_trigger, "仓位": short_pos, "备注": short_memo},
+            {"阶段": "短期交易 (日内/短期)", "时机": "止盈", "价位": f"{resistance:.0f}", "触发信号": short_trigger, "仓位": short_pos, "备注": short_memo},
+            {"阶段": "趋势交易 (长期)", "时机": "入场", "价位": f"{support:.0f}-{current_price:.0f}", "触发信号": trend_trigger, "仓位": trend_pos, "备注": trend_memo},
+            {"阶段": "趋势交易 (长期)", "时机": "止损", "价位": f"{support * 0.95:.0f}", "触发信号": trend_trigger, "仓位": trend_pos, "备注": trend_memo},
+            {"阶段": "波段交易 (中短期)", "时机": "入场", "价位": f"{support:.0f}-{resistance:.0f}", "触发信号": swing_trigger, "仓位": swing_pos, "备注": swing_memo},
+            {"阶段": "波段交易 (中短期)", "时机": "止盈/止损", "价位": f"{target_price:.0f} / {support:.0f}", "触发信号": swing_trigger, "仓位": swing_pos, "备注": swing_memo}
         ]
         df = pd.DataFrame(data)
         st.table(df)
