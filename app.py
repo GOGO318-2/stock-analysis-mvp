@@ -128,7 +128,7 @@ elif page == "投资建议":
         target_price = info.get('targetMeanPrice', current_price * 1.1)
         support = current_price * 0.95
         resistance = current_price * 1.05
-        news_sentiment = "正面" if any('positive' in n['title'].lower() for n in news) else ("负面" if any('negative' in n['title'].lower() for n in news) else "中性")
+        news_sentiment = "正面" if news and any('positive' in n.get('title', '').lower() for n in news) else ("负面" if news and any('negative' in n.get('title', '').lower() for n in news) else "中性")
         
         short_memo = f"RSI {rsi:.0f}表示{('超卖反弹' if rsi < 40 else '超买回调' if rsi > 60 else '稳定波动')}，关注成交量放大，风险{news_sentiment}情绪。"
         trend_memo = f"PE {pe:.1f}支持长期{('增长' if buy_rating > sell_rating else '谨慎')}，ROE稳定，持仓3-6月忽略波动。"
@@ -156,6 +156,9 @@ elif page == "投资建议":
         
         st.subheader("最新新闻（影响情绪）")
         for item in news:
-            st.write(f"- {item.get('title', '无标题')} ({item.get('publish_date', '')})")
+            title = item.get('title', '无标题')
+            link = item.get('link', '')
+            date = item.get('publish_date', '')
+            st.markdown(f"- [{title}]({link}) ({date})")
     else:
         st.error("请输入股票代码。")
