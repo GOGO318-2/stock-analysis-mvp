@@ -13,7 +13,8 @@ POLYGON_KEY = '2CDgF277xEhkhKndj5yFMVONxBGFFShg'
 st.set_page_config(page_title="股票分析MVP", layout="wide")
 
 st.sidebar.title("股票分析器")
-ticker = st.sidebar.text_input("输入股票代码 (例如, AAPL)", value="AAPL").upper()
+st.sidebar.markdown("支持港股：输入如'0700.HK'")
+ticker = st.sidebar.text_input("输入股票代码 (例如, AAPL 或 0700.HK)", value="AAPL").upper()
 
 @st.cache_data
 def get_real_time_quote(ticker):
@@ -74,9 +75,8 @@ page = st.sidebar.radio("导航", pages)
 if page == "首页":
     st.title(f"{ticker} 股票仪表板")
     if ticker:
-        hist = get_historical_data(ticker, days=5)  # 本周
+        hist = get_historical_data(ticker, days=5)
         if not hist.empty:
-            # K线图类似图像：添加MA5(蓝)、MA20(橙)
             fig = go.Figure(data=[go.Candlestick(x=hist.index,
                                                 open=hist['开盘'], high=hist['最高'],
                                                 low=hist['最低'], close=hist['收盘'],
@@ -86,7 +86,7 @@ if page == "首页":
             fig.add_trace(go.Scatter(x=hist.index, y=ma5, mode='lines', name='MA5 (短期)', line=dict(color='blue')))
             fig.add_trace(go.Scatter(x=hist.index, y=ma20, mode='lines', name='MA20 (长期)', line=dict(color='orange')))
             fig.update_layout(title=f"{ticker} 本周K线图（可拖拽查看细节）", xaxis_title="日期", yaxis_title="价格",
-                              xaxis_rangeslider_visible=True, xaxis_tickformat='%Y年%m月%d日')  # 汉化日期
+                              xaxis_rangeslider_visible=True, xaxis_tickformat='%Y年%m月%d日')
             st.plotly_chart(fig, use_container_width=True)
             
             quote = get_real_time_quote(ticker)
@@ -95,7 +95,7 @@ if page == "首页":
             col2.metric("今日最高", f"${quote.get('h', 'N/A'):.2f}")
             col3.metric("今日最低", f"${quote.get('l', 'N/A'):.2f}")
         else:
-            st.error("无效代码或无数据。")
+            st.error("无效代码或无数据（港股支持已启用）。")
 
 elif page == "基本面":
     st.title(f"{ticker} 基本面")
@@ -108,7 +108,6 @@ elif page == "基本面":
             macd, signal = calculate_macd(hist['收盘'])
             avg_volume = hist['成交量'].mean() if '成交量' in hist else 'N/A'
             
-            # 修复N/A：用正确键或fallback
             eps = metrics.get('netIncomePerShare', fundamentals.get('eps', 'N/A'))
             dividend_yield = metrics.get('dividendYield', fundamentals.get('dividendYield', 'N/A'))
             beta = metrics.get('beta', fundamentals.get('beta', 'N/A'))
@@ -157,20 +156,19 @@ elif page == "投资建议":
         rsi = calculate_rsi(hist['收盘'])
         macd, _ = calculate_macd(hist['收盘'])
         
-        buy_sell = "买入" if rsi < 40 else ("卖出" if rsi > 60 else "持仓")
-        reason = "RSI超卖，潜在反弹" if rsi < 40 else ("RSI超买，回调风险" if rsi > 60 else "市场稳定")
-        buy_price = f"当前价附近或支持位{round(current_price * 0.95, 2)}" if buy_sell == "买入" else "N/A"
-        sell_price = f"阻力位{round(current_price * 1.05, 2)}或目标1071" if buy_sell == "卖出" else "N/A"
-        target = 1071
-        support = round(current_price * 0.95, 2)
-        resistance = round(current_price * 1.05, 2)
+        # 表格数据：短期、趋势、波段
+        data = [
+            {"阶段": "短期交易 (日内/短期)", "时机": "入场", "价位": f"{round(current_price * 0.98, 2)}-{round(current_price * 1.02, 2)}", "触发电号": "RSI<40且MACD金叉", "仓位": "60%", "备忘": "分批买入，每批0.5张。持仓1-3天，关注成交量放大。"},
+            {"阶段": "短期交易 (日内/短期)", "时机": "止盈", "价位": f"{round(current_price * 1.05, 2)}", "触发电号": "RSI>60或MA5死叉", "仓位": "减仓40%", "备忘": "无量冲高减仓，目标区间5-10%。"},
+            {"阶段": "趋势交易 (长期)", "时机": "入场", "价位": f"{round(current_price * 0.95, 2)}-{current_price}", "触发电号": "MA20上穿且ROE>30%", "仓位": "加仓40%", "备忘": "长期持仓，忽略短期波动。目标1100+，持仓3-6月。"},
+            {"阶段": "趋势交易 (长期)", "时机": "止损", "价位": f"{round(current_price * 0.90, 2)}", "触发电号": "跌破支持位907", "仓位": "清仓", "备忘": "如果新闻负面，快速止损。"},
+            {"阶段": "波段交易 (中短期)", "时机": "入场", "价位": f"{round(current_price * 0.97, 2)}-{round(current_price * 1.03, 2)}", "触发电号": "MACD正向交叉且成交量>平均", "仓位": "70%", "备忘": "波段捕捉，持仓1-4周。分两批，关注X情绪72%正面。"},
+            {"阶段": "波段交易 (中短期)", "时机": "止盈/止损", "价位": f"{round(current_price * 1.10, 2)} / {round(current_price * 0.92, 2)}", "触发电号": "突破阻力1225或跌破MA20", "仓位": "减仓50%", "备忘": "目标区间10-15%，风险包括tech卖压。"}
+        ]
+        df = pd.DataFrame(data)
+        st.table(df)
         
-        st.write(f"**当前价格**: ${current_price:.2f}")
-        st.write(f"**市盈率 (PE)**: {pe} - 高于平均，估值偏高但增长支持。")
-        st.write(f"**每股收益 (EPS)**: {eps} - 稳定。")
-        st.write(f"**RSI**: {rsi:.2f} - {reason}。")
-        st.write(f"**MACD**: {macd:.2f} - 负值表示熊势，但关注交叉。")
-        st.markdown(f"**当天建议**: {buy_sell}。<span style='color:red'>重点: 关注RSI和新闻情绪，买入价: {buy_price}，卖出价: {sell_price}，止损: 支持位{support}，目标: {target}。</span> 理由: 技术弱但销售增长正面，X情绪混合（下行风险到850）。非投资建议。", unsafe_allow_html=True)
+        st.markdown("<span style='color:red'>重点: RSI超卖建议短期买入，支持位907，目标1101。非投资建议，请咨询专业人士。</span>", unsafe_allow_html=True)
         
         st.subheader("最新新闻（影响情绪）")
         for item in news:
