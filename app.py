@@ -63,8 +63,11 @@ def get_fed_rate():
         url = "https://www.federalreserve.gov/monetarypolicy/fomc.htm"
         response = requests.get(url)
         soup = BeautifulSoup(response.text, 'html.parser')
-        rate_text = soup.find(text="Target range for the federal funds rate").find_next('p').text.strip()
-        return rate_text
+        rate_text = soup.find(string=lambda text: "Target range for the federal funds rate" in text if text else None)
+        if rate_text:
+            return rate_text.parent.find_next_sibling('p').text.strip()
+        else:
+            return "无法获取Fed利率。"
     except:
         return "无法获取Fed利率。"
 
@@ -125,8 +128,8 @@ def backtest_ma_crossover(hist):
 
 def get_x_sentiment(ticker):
     try:
-        # 模拟x_semantic_search,实际工具调用
-        sentiment = "中性"  # placeholder
+        # 模拟x_semantic_search
+        sentiment = "中性"  # placeholder,实际用工具
         return sentiment
     except:
         return "中性"
@@ -239,9 +242,12 @@ elif page == "基本面":
         rsi = calculate_rsi(hist['Close'])
         macd, signal = calculate_macd(hist['Close'])
         avg_volume = hist['Volume'].mean() if 'Volume' in hist else 'N/A'
+        # Sharpe Ratio
+        returns = hist['Close'].pct_change()
+        sharpe = (returns.mean() / returns.std()) * np.sqrt(252) if returns.std() != 0 else 'N/A'
         
         df = pd.DataFrame({
-            "指标": ["市值", "市盈率 (PE)", "每股收益 (EPS)", "股息收益率", "Beta", "ROE", "负债权益比", "RSI (14日)", "MACD", "平均成交量"],
+            "指标": ["市值", "市盈率 (PE)", "每股收益 (EPS)", "股息收益率", "Beta", "ROE", "负债权益比", "RSI (14日)", "MACD", "平均成交量", "Sharpe Ratio (风险回报)"],
             "值": [info.get('marketCap', 'N/A'),
                    info.get('trailingPE', 'N/A'),
                    info.get('trailingEps', 'N/A'),
@@ -251,7 +257,8 @@ elif page == "基本面":
                    info.get('debtToEquity', 'N/A'),
                    rsi,
                    f"{macd:.2f} (Signal: {signal:.2f})",
-                   f"{avg_volume:,.0f}"]
+                   f"{avg_volume:,.0f}",
+                   f"{sharpe:.2f}" if isinstance(sharpe, float) else sharpe]
         })
         st.table(df)
     else:
