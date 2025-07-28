@@ -4,11 +4,12 @@ import pandas as pd
 import plotly.graph_objects as go
 import json
 import numpy as np
+import datetime  # 新增：用于时间计算
 
 # 你的API Key
 FINNHUB_KEY = 'd1p1qv9r01qi9vk2517gd1p1qv9r01qi9vk25180'
 FMP_KEY = '8n2nsHP2Lj1uHkPRrtcQ8a63Lf95VjbU'
-POLYGON_KEY = '2CDgF277xEhkhKndj5yFMVONxBGFFShg'
+POLYGON_KEY = '2CDgF277xEhkhKndj5yFMVONxBGFFShg'  # 保留，但不用于历史
 
 st.set_page_config(page_title="股票分析MVP", layout="wide")
 
@@ -36,17 +37,26 @@ def get_key_metrics(ticker):
 
 @st.cache_data
 def get_historical_data(ticker, days=30):
-    from_date = "2025-06-28"
-    to_date = "2025-07-28"
-    url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{from_date}/{to_date}?apiKey={POLYGON_KEY}"
-    response = requests.get(url)
-    data = response.json().get('results', [])
-    df = pd.DataFrame(data)
-    if not df.empty:
-        df['t'] = pd.to_datetime(df['t'], unit='ms')
-        df = df.rename(columns={'t': '日期', 'o': '开盘', 'h': '最高', 'l': '最低', 'c': '收盘', 'v': '成交量'})
+    # 使用Finnhub历史蜡烛图，支持港股
+    to_date = datetime.date.today()
+    from_date = to_date - datetime.timedelta(days=days)
+    from_unix = int(datetime.datetime.combine(from_date, datetime.time()).timestamp())
+    to_unix = int(datetime.datetime.combine(to_date, datetime.time()).timestamp())
+    url = f"https://finnhub.io/api/v1/stock/candle?symbol={ticker}&resolution=D&from={from_unix}&to={to_unix}&token={FINNHUB_KEY}"
+    response = requests.get(url).json()
+    if 'c' in response:
+        df = pd.DataFrame({
+            '日期': pd.to_datetime(response['t'], unit='s'),
+            '开盘': response['o'],
+            '最高': response['h'],
+            '最低': response['l'],
+            '收盘': response['c'],
+            '成交量': response['v']
+        })
         df.set_index('日期', inplace=True)
-    return df
+        return df
+    else:
+        return pd.DataFrame()  # 空DataFrame处理错误
 
 @st.cache_data
 def get_news(ticker):
@@ -95,7 +105,7 @@ if page == "首页":
             col2.metric("今日最高", f"${quote.get('h', 'N/A'):.2f}")
             col3.metric("今日最低", f"${quote.get('l', 'N/A'):.2f}")
         else:
-            st.error("无效代码或无数据（港股支持已启用）。")
+            st.error("无效代码或无数据（检查API限额）。")
 
 elif page == "基本面":
     st.title(f"{ticker} 基本面")
