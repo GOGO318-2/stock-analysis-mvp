@@ -33,7 +33,10 @@ def get_historical_data(ticker, period):
     try:
         stock = yf.Ticker(ticker)
         hist = stock.history(period=period)
-        return hist
+        if not hist.empty:
+            return hist
+        else:
+            return pd.DataFrame()
     except Exception as e:
         st.error(f"历史数据拉取失败: {e}.")
         return pd.DataFrame()
@@ -65,9 +68,10 @@ page = st.sidebar.radio("导航", pages)
 info, news, rec = get_stock_data(ticker)
 
 currency = info.get('currency', 'USD')  # 自动货币
+company_name = info.get('longName', ticker)
 
 if page == "首页":
-    st.title(f"{ticker} 股票仪表板")
+    st.title(f"{company_name} ({ticker}) 股票仪表板")
     period_options = {
         "1日": "1d",
         "5日": "5d",
@@ -76,7 +80,8 @@ if page == "首页":
         "月K": "1y",
         "季K": "5y"
     }
-    selected_label = st.selectbox("选择时间范围", list(period_options.keys()), index=0)
+    default_index = list(period_options.keys()).index("日K")
+    selected_label = st.selectbox("选择时间范围", list(period_options.keys()), index=default_index)
     selected_period = period_options[selected_label]
     hist = get_historical_data(ticker, selected_period)
     if not hist.empty:
@@ -99,11 +104,25 @@ if page == "首页":
         col1.metric("当前价格", f"{current_price:.2f} {currency}" if isinstance(current_price, (int, float)) else current_price)
         col2.metric("今日最高", f"{day_high:.2f} {currency}" if isinstance(day_high, (int, float)) else day_high)
         col3.metric("今日最低", f"{day_low:.2f} {currency}" if isinstance(day_low, (int, float)) else day_low)
+        
+        if currency == 'USD':  # 美股
+            st.subheader("盘前/盘后实时交易")
+            if st.button("刷新实时数据"):
+                st.rerun()
+            pre_market_price = info.get('preMarketPrice', 'N/A')
+            pre_market_change = info.get('preMarketChange', 'N/A')
+            post_market_price = info.get('postMarketPrice', 'N/A')
+            post_market_change = info.get('postMarketChange', 'N/A')
+            col4, col5, col6, col7 = st.columns(4)
+            col4.metric("盘前价格", f"{pre_market_price:.2f} {currency}" if isinstance(pre_market_price, (int, float)) else pre_market_price)
+            col5.metric("盘前变化", f"{pre_market_change:.2f}" if isinstance(pre_market_change, (int, float)) else pre_market_change)
+            col6.metric("盘后价格", f"{post_market_price:.2f} {currency}" if isinstance(post_market_price, (int, float)) else post_market_price)
+            col7.metric("盘后变化", f"{post_market_change:.2f}" if isinstance(post_market_change, (int, float)) else post_market_change)
     else:
         st.error("无历史数据可用。")
 
 elif page == "基本面":
-    st.title(f"{ticker} 基本面")
+    st.title(f"{company_name} ({ticker}) 基本面")
     if info:
         hist = get_historical_data(ticker, "1mo")
         rsi = calculate_rsi(hist['Close'])
@@ -137,7 +156,7 @@ elif page == "警报":
         st.success(f"{ticker} 价格高于阈值。")
 
 elif page == "投资建议":
-    st.title(f"{ticker} 当天投资建议 (2025-07-28)")
+    st.title(f"{company_name} ({ticker}) 当天投资建议 (2025-07-28)")
     if info:
         hist = get_historical_data(ticker, "1mo")
         current_price = info.get('currentPrice', 0)
@@ -177,11 +196,12 @@ elif page == "投资建议":
         st.markdown(f"<span style='color:red'>重点: RSI{rsi:.0f}建议{('买入' if rsi < 40 else '卖出' if rsi > 60 else '持仓')}，目标{target_price:.0f}。非投资建议。</span>", unsafe_allow_html=True)
         
         if news:
-            st.subheader("最新新闻（影响情绪）")
+            st.subheader("最新资讯（影响情绪）")
             for item in news:
-                title = item.get('title', '无标题')
+                title = item.get('title', '')
                 link = item.get('link', '')
                 date = item.get('publish_date', '')
-                st.markdown(f"- [{title}]({link}) ({date})")
+                if title:
+                    st.markdown(f"- [{title}]({link}) ({date})")
     else:
         st.error("请输入股票代码。")
