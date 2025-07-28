@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
 import yfinance as yf
+import time  # for refresh
 
 st.set_page_config(page_title="股票分析MVP", layout="wide")
 
@@ -21,7 +22,7 @@ def get_stock_data(ticker):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        news = stock.news[:3] if stock.news else []
+        news = stock.news[:3]
         recommendations = stock.recommendations_summary if not stock.recommendations.empty else pd.DataFrame()
         return info, news, recommendations
     except Exception as e:
@@ -68,7 +69,7 @@ page = st.sidebar.radio("导航", pages)
 info, news, rec = get_stock_data(ticker)
 
 currency = info.get('currency', 'USD')  # 自动货币
-company_name = info.get('longName', ticker)
+company_name = info.get('longName', ticker) or ticker
 
 if page == "首页":
     st.title(f"{company_name} ({ticker}) 股票仪表板")
@@ -97,6 +98,12 @@ if page == "首页":
                           xaxis_rangeslider_visible=True, xaxis_tickformat='%Y年%m月%d日')
         st.plotly_chart(fig, use_container_width=True)
         
+        if 'last_refresh' not in st.session_state:
+            st.session_state.last_refresh = time.time()
+            st.session_state.prev_current = info.get('currentPrice', 0)
+            st.session_state.prev_pre = info.get('preMarketPrice', 0)
+            st.session_state.prev_post = info.get('postMarketPrice', 0)
+        
         current_price = info.get('currentPrice', 'N/A')
         day_high = info.get('dayHigh', 'N/A')
         day_low = info.get('dayLow', 'N/A')
@@ -107,17 +114,38 @@ if page == "首页":
         
         if currency == 'USD':  # 美股
             st.subheader("盘前/盘后实时交易")
-            if st.button("刷新实时数据"):
-                st.rerun()
+            if st.button("手动刷新"):
+                with st.spinner('刷新中...'):
+                    time.sleep(1)  # 模拟延迟
+                    try:
+                        new_info = yf.Ticker(ticker).info
+                        st.session_state.prev_current = current_price
+                        st.session_state.prev_pre = info.get('preMarketPrice', 0)
+                        st.session_state.prev_post = info.get('postMarketPrice', 0)
+                        info = new_info
+                        st.success("刷新成功！")
+                    except:
+                        st.error("刷新失败，请重试。")
+                st.session_state.last_refresh = time.time()
+            
+            last_refresh_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st.session_state.last_refresh))
+            st.text(f"最后刷新时间: {last_refresh_time}")
+            
             pre_market_price = info.get('preMarketPrice', 'N/A')
-            pre_market_change = info.get('preMarketChange', 'N/A')
+            pre_market_change = info.get('preMarketChange', 0)
             post_market_price = info.get('postMarketPrice', 'N/A')
-            post_market_change = info.get('postMarketChange', 'N/A')
+            post_market_change = info.get('postMarketChange', 0)
+            current_change = current_price - st.session_state.prev_current if isinstance(current_price, (int, float)) else 0
+            
             col4, col5, col6, col7 = st.columns(4)
             col4.metric("盘前价格", f"{pre_market_price:.2f} {currency}" if isinstance(pre_market_price, (int, float)) else pre_market_price)
-            col5.metric("盘前变化", f"{pre_market_change:.2f}" if isinstance(pre_market_change, (int, float)) else pre_market_change)
+            col5.metric("盘前变化", f"{pre_market_change:.2f}" if isinstance(pre_market_change, (int, float)) else pre_market_change, delta_color="normal" if pre_market_change >= 0 else "inverse")
             col6.metric("盘后价格", f"{post_market_price:.2f} {currency}" if isinstance(post_market_price, (int, float)) else post_market_price)
-            col7.metric("盘后变化", f"{post_market_change:.2f}" if isinstance(post_market_change, (int, float)) else post_market_change)
+            col7.metric("盘后变化", f"{post_market_change:.2f}" if isinstance(post_market_change, (int, float)) else post_market_change, delta_color="normal" if post_market_change >= 0 else "inverse")
+            
+            # 自动刷新每60s
+            time.sleep(60)
+            st.rerun()
     else:
         st.error("无历史数据可用。")
 
@@ -148,12 +176,26 @@ elif page == "基本面":
 
 elif page == "警报":
     st.title("价格警报")
-    threshold = st.number_input("设置警报阈值 (例如, 价格低于)", value=100.0)
-    current_price = info.get('currentPrice', 0)
-    if current_price < threshold:
-        st.warning(f"警报: {ticker} 价格 {current_price:.2f} {currency} 低于 {threshold}!")
-    else:
-        st.success(f"{ticker} 价格高于阈值。")
+    st.markdown("""
+    **用法说明**：设置价格阈值和类型（低于/高于），app每分钟自动检查当前价格。如果触发阈值，会显示警告通知（页面弹窗）。通知方式：实时页面警告（红色），支持手动刷新检查。设置后保存，监控即时生效。
+    """)
+    alert_type = st.selectbox("警报类型", ["低于阈值", "高于阈值"])
+    threshold = st.number_input("设置阈值", value=100.0)
+    if st.button("保存设置"):
+        st.session_state.alert_type = alert_type
+        st.session_state.threshold = threshold
+        st.success("设置保存！开始监控。")
+    
+    if 'alert_type' in st.session_state:
+        current_price = info.get('currentPrice', 0)
+        if (st.session_state.alert_type == "低于阈值" and current_price < st.session_state.threshold) or (st.session_state.alert_type == "高于阈值" and current_price > st.session_state.threshold):
+            st.warning(f"警报触发: {ticker} 价格 {current_price:.2f} {currency} {st.session_state.alert_type} {st.session_state.threshold}!")
+        else:
+            st.success(f"{ticker} 价格正常。")
+        
+        # 自动刷新每60s
+        time.sleep(60)
+        st.rerun()
 
 elif page == "投资建议":
     st.title(f"{company_name} ({ticker}) 当天投资建议 (2025-07-28)")
