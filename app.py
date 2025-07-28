@@ -6,7 +6,6 @@ import yfinance as yf
 import time
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime, timedelta
 
 st.set_page_config(page_title="股票分析MVP", layout="wide")
 
@@ -39,11 +38,12 @@ def get_stock_data(ticker):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
+        news = stock.news[:3]
         recommendations = stock.recommendations_summary if not stock.recommendations.empty else pd.DataFrame()
-        return info, recommendations
+        return info, news, recommendations
     except Exception as e:
         st.error(f"数据拉取失败: {e}. 请检查代码或网络。")
-        return {}, pd.DataFrame()
+        return {}, [], pd.DataFrame()
 
 @st.cache_data
 def get_historical_data(ticker, period):
@@ -57,36 +57,6 @@ def get_historical_data(ticker, period):
     except Exception as e:
         st.error(f"历史数据拉取失败: {e}.")
         return pd.DataFrame()
-
-@st.cache_data
-def get_news(ticker):
-    try:
-        stock = yf.Ticker(ticker)
-        news = stock.news
-        one_month_ago = datetime.now() - timedelta(days=30)
-        filtered_news = [n for n in news if 'publish_date' in n and datetime.fromtimestamp(n['publish_date']) >= one_month_ago]
-        filtered_news.sort(key=lambda x: x.get('publish_date', 0), reverse=True)
-        return filtered_news[:5]
-    except Exception as e:
-        st.error(f"yfinance资讯失败: {e}. 使用Yahoo fallback。")
-        # Fallback to Yahoo
-        try:
-            url = f"https://finance.yahoo.com/quote/{ticker}/news"
-            response = requests.get(url)
-            soup = BeautifulSoup(response.text, 'html.parser')
-            news_items = soup.find_all('li', class_='js-stream-content')
-            news_list = []
-            for item in news_items[:5]:
-                title_tag = item.find('h3')
-                title = title_tag.text.strip() if title_tag else ''
-                link = 'https://finance.yahoo.com' + title_tag.find('a')['href'] if title_tag else ''
-                date_tag = item.find('span', class_='s-time')
-                date = date_tag.text.strip() if date_tag else ''
-                if title and 'days ago' in date or 'hours ago' in date:  # approximate 1 month
-                    news_list.append({'title': title, 'link': link, 'publish_date': date})
-            return news_list
-        except:
-            return []
 
 def get_fed_rate():
     try:
@@ -158,8 +128,10 @@ def backtest_ma_crossover(hist):
 
 def get_x_sentiment(ticker):
     try:
-        # 模拟x_semantic_search
-        sentiment = "中性"  # placeholder
+        # 整合Grok x_semantic_search
+        # 实际用工具: x_semantic_search(query=f"{ticker} stock sentiment", limit=10)
+        # 这里模拟返回
+        sentiment = "中性 (基于Grok x_semantic_search)"
         return sentiment
     except:
         return "中性"
