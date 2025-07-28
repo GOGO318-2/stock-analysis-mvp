@@ -6,13 +6,12 @@ import yfinance as yf
 import time
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime, timedelta
 
 st.set_page_config(page_title="股票分析MVP", layout="wide")
 
 st.sidebar.title("股票分析器")
 st.sidebar.markdown("支持港股：输入如0700（自动加.HK）")
-ticker_input = st.sidebar.text_input("输入股票代码 (例如, AAPL 或 0700)", value="AAPL").upper()
+ticker_input = st.sidebar.text_input("输入股票代码 (例如, AAPL 或 0700)", value="TSLA").upper()
 
 # 自动添加.HK for港股
 if ticker_input.isdigit() and 1 <= len(ticker_input) <= 5 and not ticker_input.endswith('.HK'):
@@ -39,11 +38,12 @@ def get_stock_data(ticker):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
+        news = stock.news[:3]
         recommendations = stock.recommendations_summary if not stock.recommendations.empty else pd.DataFrame()
-        return info, recommendations
+        return info, news, recommendations
     except Exception as e:
         st.error(f"数据拉取失败: {e}. 请检查代码或网络。")
-        return {}, pd.DataFrame()
+        return {}, [], pd.DataFrame()
 
 @st.cache_data
 def get_historical_data(ticker, period):
@@ -57,36 +57,6 @@ def get_historical_data(ticker, period):
     except Exception as e:
         st.error(f"历史数据拉取失败: {e}.")
         return pd.DataFrame()
-
-def get_news(ticker):
-    try:
-        stock = yf.Ticker(ticker)
-        news = stock.news
-        one_month_ago = datetime.now() - timedelta(days=30)
-        filtered_news = [n for n in news if 'publish_date' in n and datetime.fromtimestamp(n['publish_date']) >= one_month_ago]
-        filtered_news.sort(key=lambda x: x.get('publish_date', 0), reverse=True)
-        if filtered_news:
-            return filtered_news[:5]
-    except:
-        pass
-    # Fallback to Investing.com
-    try:
-        url = f"https://cn.investing.com/equities/{ticker}-news"
-        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
-        soup = BeautifulSoup(response.text, 'html.parser')
-        news_items = soup.find_all('article', class_='js-article-item')
-        news_list = []
-        for item in news_items[:5]:
-            title_tag = item.find('a', class_='title')
-            title = title_tag.text.strip() if title_tag else ''
-            link = 'https://cn.investing.com' + title_tag['href'] if title_tag else ''
-            date_tag = item.find('time')
-            date = date_tag['datetime'] if date_tag else ''
-            if title and datetime.fromisoformat(date.replace('Z', '+00:00')) >= one_month_ago:
-                news_list.append({'title': title, 'link': link, 'publish_date': date})
-        return news_list
-    except:
-        return []
 
 def get_fed_rate():
     try:
