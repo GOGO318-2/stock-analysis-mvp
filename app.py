@@ -22,7 +22,7 @@ def get_stock_data(ticker):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        news = stock.news[:3] if stock.news else []
+        news = stock.news[:3]
         recommendations = stock.recommendations_summary if not stock.recommendations.empty else pd.DataFrame()
         return info, news, recommendations
     except Exception as e:
@@ -230,22 +230,25 @@ elif page == "投资建议":
         swing_pos = "70%" if macd > 0 else "减仓50%"
         
         data = [
-            {"阶段": "短期交易 (日内/短期)", "时机": "入场", "价位": f"{support:.0f}-{current_price:.0f}", "触发信号": short_trigger, "仓位": short_pos, "备注": short_memo},
-            {"阶段": "短期交易 (日内/短期)", "时机": "止盈", "价位": f"{resistance:.0f}", "触发信号": short_trigger, "仓位": short_pos, "备注": short_memo},
-            {"阶段": "趋势交易 (长期)", "时机": "入场", "价位": f"{support:.0f}-{current_price:.0f}", "触发信号": trend_trigger, "仓位": trend_pos, "备注": trend_memo},
-            {"阶段": "趋势交易 (长期)", "时机": "止损", "价位": f"{support * 0.95:.0f}", "触发信号": trend_trigger, "仓位": trend_pos, "备注": trend_memo},
-            {"阶段": "波段交易 (中短期)", "时机": "入场", "价位": f"{support:.0f}-{resistance:.0f}", "触发信号": swing_trigger, "仓位": swing_pos, "备注": swing_memo},
-            {"阶段": "波段交易 (中短期)", "时机": "止盈/止损", "价位": f"{target_price:.0f} / {support:.0f}", "触发信号": swing_trigger, "仓位": swing_pos, "备注": swing_memo}
+            {"阶段": "短期交易 (日内/短期)", "时机": "入场", "价位": f"{support:.0f}-{current_price:.0f}", "触发电号": short_trigger, "仓位": short_pos, "备忘": short_memo},
+            {"阶段": "短期交易 (日内/短期)", "时机": "止盈", "价位": f"{resistance:.0f}", "触发电号": short_trigger, "仓位": short_pos, "备忘": short_memo},
+            {"阶段": "趋势交易 (长期)", "时机": "入场", "价位": f"{support:.0f}-{current_price:.0f}", "触发电号": trend_trigger, "仓位": trend_pos, "备忘": trend_memo},
+            {"阶段": "趋势交易 (长期)", "时机": "止损", "价位": f"{support * 0.95:.0f}", "触发电号": trend_trigger, "仓位": trend_pos, "备忘": trend_memo},
+            {"阶段": "波段交易 (中短期)", "时机": "入场", "价位": f"{support:.0f}-{resistance:.0f}", "触发电号": swing_trigger, "仓位": swing_pos, "备忘": swing_memo},
+            {"阶段": "波段交易 (中短期)", "时机": "止盈/止损", "价位": f"{target_price:.0f} / {support:.0f}", "触发电号": swing_trigger, "仓位": swing_pos, "备忘": swing_memo}
         ]
         df = pd.DataFrame(data)
         st.table(df)
         
         st.markdown(f"<span style='color:red'>重点: RSI{rsi:.0f}建议{('买入' if rsi < 40 else '卖出' if rsi > 60 else '持仓')}，目标{target_price:.0f}。非投资建议。</span>", unsafe_allow_html=True)
         
-        news_list = get_news(ticker, currency)
-        if news_list:
+        if news:
             st.subheader("最新资讯（影响情绪）")
-            for item in news_list:
-                st.markdown(f"- [{item['title']}]({item['link']}) ({item['date']})")
+            for item in news:
+                title = item.get('title', '')
+                link = item.get('link', '')
+                date = item.get('publish_date', '')
+                if title:
+                    st.markdown(f"- [{title}]({link}) ({date})")
     else:
         st.error("请输入股票代码。")
