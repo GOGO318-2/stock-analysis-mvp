@@ -128,12 +128,23 @@ def backtest_ma_crossover(hist):
 
 def get_x_sentiment(ticker):
     try:
-        # 整合Grok x_semantic_search
-        # 实际用工具: x_semantic_search(query=f"{ticker} stock sentiment", limit=10)
-        # 这里模拟返回
-        sentiment = "中性 (基于Grok x_semantic_search)"
+        # 整合Grok API
+        API_KEY = "xai-N36diIqx3wkZz6eBGQfjadqdNe3H84FYfPsXXauU02ag1s5k45zida3aYocHu5Bi9AhT6jO5kFpjW7CD"  # 替换你的Key，或用st.secrets["api_key"]
+        url = "https://api.x.ai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "model": "grok-4",
+            "messages": [{"role": "user", "content": f"分析 {ticker} 股票最近X推文情绪，返回正面/负面比例。"}]
+        }
+        response = requests.post(url, headers=headers, json=data)
+        result = response.json()
+        sentiment = result['choices'][0]['message']['content'] if 'choices' in result else "中性"
         return sentiment
-    except:
+    except Exception as e:
+        st.error(f"Grok情绪分析失败: {e}.")
         return "中性"
 
 pages = ["首页", "基本面", "警报", "投资建议"]
