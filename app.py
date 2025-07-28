@@ -42,7 +42,7 @@ def get_stock_data(ticker):
         recommendations = stock.recommendations_summary if not stock.recommendations.empty else pd.DataFrame()
         return info, recommendations
     except Exception as e:
-        st.error(f"数据拉取失败: {e}. 请检查代码或网络。")
+        st.warning(f"数据拉取失败: {e}. 该股可能新上市或数据滞后。")
         return {}, pd.DataFrame()
 
 @st.cache_data
@@ -55,35 +55,26 @@ def get_historical_data(ticker, period):
         else:
             return pd.DataFrame()
     except Exception as e:
-        st.error(f"历史数据拉取失败: {e}.")
+        st.warning(f"历史数据拉取失败: {e}. 该股可能新上市或数据滞后。")
         return pd.DataFrame()
 
 def get_news(ticker):
-    try:
-        stock = yf.Ticker(ticker)
-        news = stock.news
-        one_month_ago = datetime.now() - timedelta(days=30)
-        filtered_news = [n for n in news if 'publish_date' in n and datetime.fromtimestamp(n['publish_date']) >= one_month_ago]
-        filtered_news.sort(key=lambda x: x.get('publish_date', 0), reverse=True)
-        if filtered_news:
-            return filtered_news[:5]
-    except:
-        pass
-    # Fallback to Yahoo Finance news
     try:
         url = f"https://finance.yahoo.com/quote/{ticker}/news"
         response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
         soup = BeautifulSoup(response.text, 'html.parser')
         news_items = soup.find_all('li', class_='js-stream-content')
         news_list = []
+        one_month_ago = datetime.now() - timedelta(days=30)
         for item in news_items[:5]:
             title_tag = item.find('h3')
             title = title_tag.text.strip() if title_tag else ''
             link = 'https://finance.yahoo.com' + title_tag.find('a')['href'] if title_tag else ''
-            date_tag = item.find('span', class_='s-time')
-            date = date_tag.text.strip() if date_tag else ''
-            if title:
-                news_list.append({'title': title, 'link': link, 'publish_date': date})
+            date_tag = item.find('div', class_='C(#959595) Fz(11px) D(ib) Mb(4px) Mstart(4px)')
+            date_str = date_tag.text.strip() if date_tag else ''
+            # Approximate date check
+            if title and ('hour' in date_str or 'day' in date_str or 'week' in date_str):
+                news_list.append({'title': title, 'link': link, 'publish_date': date_str})
         return news_list
     except:
         return []
@@ -167,7 +158,7 @@ def get_x_sentiment(ticker):
 pages = ["首页", "基本面", "警报", "投资建议"]
 page = st.sidebar.radio("导航", pages)
 
-info, news, rec = get_stock_data(ticker)
+info, rec = get_stock_data(ticker)
 
 currency = info.get('currency', 'USD')  # 自动货币
 company_name = info.get('longName', ticker) or ticker
@@ -365,5 +356,7 @@ elif page == "投资建议":
                 date = item.get('publish_date', '')
                 if title:
                     st.markdown(f"- [{title}]({link}) ({date})")
+        else:
+            st.warning("暂无最新资讯。")
     else:
         st.error("请输入股票代码。")
