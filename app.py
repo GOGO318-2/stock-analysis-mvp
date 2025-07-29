@@ -12,7 +12,6 @@ import json  # Added for Grok API
 st.set_page_config(page_title="股票分析MVP", layout="wide")
 
 st.sidebar.title("股票分析器")
-st.sidebar.markdown("支持港股：输入如0700")
 ticker_input = st.sidebar.text_input("输入股票代码 (例如, TSLA 或 0700)", value="TSLA").upper()
 
 # 自动添加.HK for港股, 去除leading zero
@@ -158,7 +157,7 @@ def get_historical_data(ticker, period):
                     return hist
         except Exception as e:
             st.warning(f"{api} 获取历史数据失败: {e}. 尝试下一个API。")
-    # Fallback to Yahoo Finance scraping for HK stocks
+    # Fallback to scraping Yahoo Finance history page
     try:
         url = f"https://finance.yahoo.com/quote/{ticker}/history?p={ticker}"
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -170,26 +169,24 @@ def get_historical_data(ticker, period):
             hist_data = []
             for row in rows:
                 cols = row.find_all('td')
-                if len(cols) >= 6:
+                if len(cols) >= 7:
                     date = cols[0].text
-                    open_price = cols[1].text
-                    high = cols[2].text
-                    low = cols[3].text
-                    close = cols[4].text
-                    volume = cols[6].text
+                    open_price = cols[1].text.replace(',', '') or 0
+                    high = cols[2].text.replace(',', '') or 0
+                    low = cols[3].text.replace(',', '') or 0
+                    close = cols[4].text.replace(',', '') or 0
+                    volume = cols[6].text.replace(',', '') or 0
                     hist_data.append({
-                        'Date': date,
-                        'Open': float(open_price.replace(',', '')),
-                        'High': float(high.replace(',', '')),
-                        'Low': float(low.replace(',', '')),
-                        'Close': float(close.replace(',', '')),
-                        'Volume': float(volume.replace(',', ''))
+                        'Open': float(open_price),
+                        'High': float(high),
+                        'Low': float(low),
+                        'Close': float(close),
+                        'Volume': float(volume)
                     })
-            hist = pd.DataFrame(hist_data).set_index('Date')
-            hist.index = pd.to_datetime(hist.index)
+            hist = pd.DataFrame(hist_data, index=pd.to_datetime([datetime.strptime(d, '%b %d, %Y') for d in [row.find_all('td')[0].text for row in rows if len(row.find_all('td')) >= 7]]))
             return hist
-    except:
-        pass
+    except Exception as e:
+        st.warning(f"刮取Yahoo历史数据失败: {e}")
     st.error("所有API均失败，无法获取历史数据。")
     return pd.DataFrame()
 
