@@ -7,6 +7,7 @@ import time
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
+import json  # Added for Grok API
 
 st.set_page_config(page_title="股票分析MVP", layout="wide")
 
@@ -42,7 +43,8 @@ for wl_ticker in st.session_state.watchlist:
 API_KEYS = {
     "finnhub": "d1p1qv9r01qi9vk2517gd1p1qv9r01qi9vk25180",
     "alpha_vantage": "Z45S0SLJGM378PIO",
-    "polygon": "2CDgF277xEhkhKndj5yFMVONxBGFFShg"
+    "polygon": "2CDgF277xEhkhKndj5yFMVONxBGFFShg",
+    "xai": "xai-N36diIqx3wkZz6eBGQfjadqdNe3H84FYfPsXXauU02ag1s5k45zida3aYocHu5Bi9AhT6jO5kFpjW7CD"
 }
 
 # API order: Prioritize alpha_vantage for HK stocks
@@ -106,7 +108,14 @@ def get_stock_data(ticker):
                 return info, recommendations
         except Exception as e:
             st.warning(f"{api} 获取股票数据失败: {e}. 尝试下一个API。")
-    st.error("所有API均失败，无法获取股票数据。")
+    # Fallback to yfinance only if all fail
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        recommendations = stock.recommendations_summary if hasattr(stock, 'recommendations_summary') and not stock.recommendations.empty else pd.DataFrame()
+        return info, recommendations
+    except:
+        st.error("所有API均失败，无法获取股票数据。")
     return {}, pd.DataFrame()
 
 @st.cache_data
@@ -159,7 +168,13 @@ def get_historical_data(ticker, period):
                     return hist
         except Exception as e:
             st.warning(f"{api} 获取历史数据失败: {e}. 尝试下一个API。")
-    st.error("所有API均失败，无法获取历史数据。")
+    # Fallback to yfinance
+    try:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period=period)
+        return hist if not hist.empty else pd.DataFrame()
+    except:
+        st.error("所有API均失败，无法获取历史数据。")
     return pd.DataFrame()
 
 def get_news_and_sentiment(ticker_symbol):
@@ -231,7 +246,28 @@ def get_news_and_sentiment(ticker_symbol):
                     return news_list
         except Exception as e:
             st.warning(f"{api} 获取新闻失败: {e}. 尝试下一个API。")
-    return []
+    # Fallback to Yahoo scraping if all fail
+    try:
+        url = f"https://finance.yahoo.com/quote/{ticker_symbol}/news"
+        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+        soup = BeautifulSoup(response.text, 'html.parser')
+        news_items = soup.find_all('li', class_='js-stream-content')
+        news_list = []
+        positive_keywords = ['positive', 'bullish', 'surge', 'gain', 'up', 'buy', 'growth']
+        negative_keywords = ['negative', 'bearish', 'drop', 'loss', 'down', 'sell', 'decline']
+        for item in news_items[:5]:
+            title_tag = item.find('h3')
+            title = title_tag.text.strip() if title_tag else ''
+            link = 'https://finance.yahoo.com' + title_tag.find('a')['href'] if title_tag else ''
+            date_tag = item.find('div', class_='C(#959595) Fz(11px) D(ib) Mb(4px) Mstart(4px)')
+            date_str = date_tag.text.strip() if date_tag else ''
+            title_lower = title.lower()
+            sent_label = "正面" if any(kw in title_lower for kw in positive_keywords) else "负面" if any(kw in title_lower for kw in negative_keywords) else "中性"
+            if title:
+                news_list.append({'title': title, 'link': link, 'publish_date': date_str, 'sentiment': sent_label})
+        return news_list
+    except:
+        return []
 
 def get_fed_rate():
     try:
@@ -303,10 +339,17 @@ def backtest_ma_crossover(hist):
 
 def get_x_sentiment(ticker):
     try:
-        # 模拟x_semantic_search
-        sentiment = "中性"  # placeholder
-        return sentiment
-    except:
+        url = "https://api.x.ai/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {API_KEYS['xai']}", "Content-Type": "application/json"}
+        data = {
+            "model": "grok-beta",
+            "messages": [{"role": "user", "content": f"What is the current sentiment on X (formerly Twitter) for stock {ticker}? Summarize in one word: 正面, 负面, or 中性."}]
+        }
+        response = requests.post(url, headers=headers, json=data)
+        content = response.json()['choices'][0]['message']['content']
+        return content.strip()
+    except Exception as e:
+        st.warning(f"Grok API 情绪分析失败: {e}")
         return "中性"
 
 pages = ["首页", "基本面", "警报", "投资建议"]
@@ -479,14 +522,18 @@ elif page == "投资建议":
             elif sentiments.count("负面") > sentiments.count("正面"):
                 news_sentiment = "负面"
         
-        current_price = info.get('currentPrice', 0) if isinstance(info.get('currentPrice', 0), (int, float)) else 0
+        current_price = info.get('currentPrice', 0)
+        if not isinstance(current_price, (int, float)):
+            current_price = 0
         pe = info.get('trailingPE', 0)
         eps = info.get('trailingEps', 0)
         rsi = calculate_rsi(hist['Close'])
         macd, _ = calculate_macd(hist['Close'])
         buy_rating = rec.get('Buy', 0) if not rec.empty else 0
         sell_rating = rec.get('Sell', 0) if not rec.empty else 0
-        target_price = info.get('targetMeanPrice', current_price * 1.1 if isinstance(current_price, (int, float)) else 0)
+        target_price = info.get('targetMeanPrice', current_price * 1.1)
+        if not isinstance(target_price, (int, float)):
+            target_price = current_price * 1.1
         support = current_price * 0.95
         resistance = current_price * 1.05
         
@@ -502,14 +549,20 @@ elif page == "投资建议":
         swing_pos = "70%" if macd > 0 else "减仓50%"
         
         data = [
-            {"阶段": "短期交易 (日内/短期)", "时机": "入场", "价位": f"{support:.0f}-{current_price:.0f}", "触发电号": short_trigger, "仓位": short_pos, "备忘": short_memo},
-            {"阶段": "短期交易 (日内/短期)", "时机": "止盈", "价位": f"{resistance:.0f}", "触发电号": short_trigger, "仓位": short_pos, "备忘": short_memo},
-            {"阶段": "趋势交易 (长期)", "时机": "入场", "价位": f"{support:.0f}-{current_price:.0f}", "触发电号": trend_trigger, "仓位": trend_pos, "备忘": trend_memo},
-            {"阶段": "趋势交易 (长期)", "时机": "止损", "价位": f"{support * 0.95:.0f}", "触发电号": trend_trigger, "仓位": trend_pos, "备忘": trend_memo},
-            {"阶段": "波段交易 (中短期)", "时机": "入场", "价位": f"{support:.0f}-{resistance:.0f}", "触发电号": swing_trigger, "仓位": swing_pos, "备忘": swing_memo},
-            {"阶段": "波段交易 (中短期)", "时机": "止盈/止损", "价位": f"{target_price:.0f} / {support:.0f}", "触发电号": swing_trigger, "仓位": swing_pos, "备忘": swing_memo}
+            {"阶段": "短期交易 (日内/短期)", "时机": "入场", "价位": f"{support:.0f}-{current_price:.0f}", "触发信号": short_trigger, "仓位": short_pos, "备注": short_memo},
+            {"阶段": "短期交易 (日内/短期)", "时机": "止盈", "价位": f"{resistance:.0f}", "触发信号": short_trigger, "仓位": short_pos, "备注": short_memo},
+            {"阶段": "趋势交易 (长期)", "时机": "入场", "价位": f"{support:.0f}-{current_price:.0f}", "触发信号": trend_trigger, "仓位": trend_pos, "备注": trend_memo},
+            {"阶段": "趋势交易 (长期)", "时机": "止损", "价位": f"{support * 0.95:.0f}", "触发信号": trend_trigger, "仓位": trend_pos, "备注": trend_memo},
+            {"阶段": "波段交易 (中短期)", "时机": "入场", "价位": f"{support:.0f}-{resistance:.0f}", "触发信号": swing_trigger, "仓位": swing_pos, "备注": swing_memo},
+            {"阶段": "波段交易 (中短期)", "时机": "止盈/止损", "价位": f"{target_price:.0f} / {support:.0f}", "触发信号": swing_trigger, "仓位": swing_pos, "备注": swing_memo}
         ]
         df = pd.DataFrame(data)
+        
+        # 添加筛选
+        trade_type = st.selectbox("选择交易类型", ["所有", "短期交易", "趋势交易", "波段交易"])
+        if trade_type != "所有":
+            df = df[df["阶段"].str.contains(trade_type, na=False)]
+        
         st.table(df)
         
         st.markdown(f"<span style='color:red'>重点: RSI{rsi:.0f}建议{('买入' if rsi < 40 else '卖出' if rsi > 60 else '持仓')}，目标{target_price:.0f}。非投资建议。</span>", unsafe_allow_html=True)
