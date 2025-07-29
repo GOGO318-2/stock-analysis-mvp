@@ -62,26 +62,25 @@ def get_historical_data(ticker, period):
         st.error(f"历史数据拉取失败: {e}.")
         return pd.DataFrame()
 
-def get_news(ticker):
+def get_news(ticker_symbol):
     try:
-        url = f"https://finance.yahoo.com/quote/{ticker}/news"
-        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
-        soup = BeautifulSoup(response.text, 'html.parser')
-        news_items = soup.find_all('li', class_='js-stream-content')
-        news_list = []
-        one_month_ago = datetime.now() - timedelta(days=30)
-        for item in news_items[:5]:
-            title_tag = item.find('h3')
-            title = title_tag.text.strip() if title_tag else ''
-            link = 'https://finance.yahoo.com' + title_tag.find('a')['href'] if title_tag else ''
-            date_tag = item.find('div', class_='C(#959595) Fz(11px) D(ib) Mb(4px) Mstart(4px)')
-            date_str = date_tag.text.strip() if date_tag else ''
-            # Approximate date check
-            if title and ('hour' in date_str or 'day' in date_str or 'week' in date_str):
-                news_list.append({'title': title, 'link': link, 'publish_date': date_str})
-        return news_list
-    except:
-        return []
+        stock = yf.Ticker(ticker_symbol)
+        news_list = stock.news  # 使用 yfinance 内置新闻 API
+        if not news_list:
+            return []
+        # 过滤最近新闻（假设取前5条）
+        recent_news = news_list[:5]
+        formatted_news = []
+        for item in recent_news:
+            formatted_news.append({
+                'title': item.get('title', ''),
+                'link': item.get('link', ''),
+                'publish_date': datetime.fromtimestamp(item.get('providerPublishTime', 0)).strftime('%Y-%m-%d %H:%M:%S') if item.get('providerPublishTime') else ''
+            })
+        return formatted_news
+    except Exception as e:
+        st.warning(f"新闻获取失败: {e}. 尝试备用方法。")
+        return []  # 如果失败，返回空列表
 
 def get_fed_rate():
     try:
@@ -313,10 +312,25 @@ elif page == "警报":
         st.rerun()
 
 elif page == "投资建议":
-    st.title(f"{company_name} ({ticker}) 当天投资建议 (2025-07-28)")
+    today = datetime.now().strftime("%Y-%m-%d")  # 动态当天日期
+    st.title(f"{company_name} ({ticker}) 当天投资建议 ({today})")
     if info:
         hist = get_historical_data(ticker, "1mo")
-        news = get_news(ticker)  # 添加这里以定义 news
+        news = get_news(ticker)  # 获取新闻
+        if not news:
+            st.warning("无最新新闻可用，可能因 API 限制。")
+        
+        # 增强情绪分析：更多关键词
+        positive_keywords = ['positive', 'bullish', 'surge', 'gain', 'up', 'buy', 'growth']
+        negative_keywords = ['negative', 'bearish', 'drop', 'loss', 'down', 'sell', 'decline']
+        news_sentiment = "中性"
+        if news:
+            titles_lower = [n.get('title', '').lower() for n in news]
+            if any(any(kw in title for kw in positive_keywords) for title in titles_lower):
+                news_sentiment = "正面"
+            elif any(any(kw in title for kw in negative_keywords) for title in titles_lower):
+                news_sentiment = "负面"
+        
         current_price = info.get('currentPrice', 0)
         pe = info.get('trailingPE', 0)
         eps = info.get('trailingEps', 0)
@@ -327,7 +341,6 @@ elif page == "投资建议":
         target_price = info.get('targetMeanPrice', current_price * 1.1)
         support = current_price * 0.95
         resistance = current_price * 1.05
-        news_sentiment = "正面" if news and any('positive' in n.get('title', '').lower() for n in news) else ("负面" if news and any('negative' in n.get('title', '').lower() for n in news) else "中性")
         
         short_memo = f"RSI {rsi:.0f}表示{('超卖反弹' if rsi < 40 else '超买回调' if rsi > 60 else '稳定波动')}，关注成交量放大，风险{news_sentiment}情绪。"
         trend_memo = f"PE {pe:.1f}支持长期{('增长' if buy_rating > sell_rating else '谨慎')}，ROE稳定，持仓3-6月忽略波动。"
