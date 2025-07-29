@@ -7,7 +7,6 @@ import time
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
-import json  # Added for Grok API
 
 st.set_page_config(page_title="股票分析MVP", layout="wide")
 
@@ -16,7 +15,7 @@ st.sidebar.title("股票分析器")
 st.sidebar.markdown("支持港股：输入如0700")
 ticker_input = st.sidebar.text_input("输入股票代码 (例如, TSLA 或 0700)", value="TSLA").upper()
 
-# Auto append .HK for Hong Kong stocks, remove leading zeros
+# Auto append .HK for Hong Kong stocks
 if ticker_input.isdigit():
     ticker_clean = ticker_input.lstrip('0')
     if 1 <= len(ticker_clean) <= 5:
@@ -44,38 +43,17 @@ for wl_ticker in st.session_state.watchlist:
         ticker_input = wl_ticker
         st.rerun()
 
-# API keys
-API_KEYS = {
-    "finnhub": "d1p1qv9r01qi9vk2517gd1p1qv9r01qi9vk25180",
-    "alpha_vantage": "Z45S0SLJGM378PIO",
-    "polygon": "2CDgF277xEhkhKndj5yFMVONxBGFFShg",
-    "xai": "xai-N36diIqx3wkZz6eBGQfjadqdNe3H84FYfPsXXauU02ag1s5k45zida3aYocHu5Bi9AhT6jO5kFpjW7CD"
-}
-API_ORDER = ["yfinance", "alpha_vantage", "finnhub", "polygon"]
-
 # Data fetching
 @st.cache_data
 def get_stock_data(ticker):
-    for api in API_ORDER:
-        try:
-            time.sleep(1)  # Rate limit
-            if api == "yfinance":
-                stock = yf.Ticker(ticker)
-                info = stock.info
-                rec = stock.recommendations_summary if hasattr(stock, 'recommendations_summary') and not stock.recommendations.empty else pd.DataFrame()
-                if info:
-                    return info, rec
-            elif api == "finnhub":
-                quote_url = f"https://finnhub.io/api/v1/quote?symbol={ticker}&token={API_KEYS['finnhub']}"
-                quote_resp = requests.get(quote_url).json()
-                if 'c' in quote_resp:
-                    info = {'currentPrice': quote_resp['c'], 'dayHigh': quote_resp['h'], 'dayLow': quote_resp['l'], 'preMarketPrice': 'N/A', 'postMarketPrice': 'N/A'}
-                    return info, pd.DataFrame()
-        except Exception as e:
-            st.warning(f"{api} 获取数据失败: {e}")
-            continue
-    st.error("所有API和备用数据源均失败，请稍后重试或检查网络。")
-    return {}, pd.DataFrame()
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        rec = stock.recommendations_summary if hasattr(stock, 'recommendations_summary') and not stock.recommendations.empty else pd.DataFrame()
+        return info, rec
+    except Exception as e:
+        st.error(f"数据获取失败: {e}. 请检查网络或稍后重试。")
+        return {}, pd.DataFrame()
 
 @st.cache_data
 def get_historical_data(ticker, period):
@@ -84,7 +62,7 @@ def get_historical_data(ticker, period):
         hist = stock.history(period=period)
         return hist if not hist.empty else pd.DataFrame()
     except Exception as e:
-        st.warning(f"历史数据获取失败: {e}")
+        st.error(f"历史数据获取失败: {e}. 请检查网络或稍后重试。")
         return pd.DataFrame()
 
 # Technical indicators
@@ -108,56 +86,6 @@ def calculate_bollinger_bands(close, window=20, std_dev=2):
     upper_band = rolling_mean + (rolling_std * std_dev)
     lower_band = rolling_mean - (rolling_std * std_dev)
     return upper_band, rolling_mean, lower_band
-
-# News and sentiment
-def get_news_and_sentiment(ticker):
-    try:
-        stock = yf.Ticker(ticker)
-        news = stock.news[:5]
-        news_list = []
-        positive_keywords = ['positive', 'bullish', 'surge', 'gain', 'up', 'buy', 'growth']
-        negative_keywords = ['negative', 'bearish', 'drop', 'loss', 'down', 'sell', 'decline']
-        for item in news:
-            title_lower = item.get('title', '').lower()
-            sent_label = "正面" if any(kw in title_lower for kw in positive_keywords) else "负面" if any(kw in title_lower for kw in negative_keywords) else "中性"
-            news_list.append({
-                'title': item.get('title', ''),
-                'link': item.get('link', ''),
-                'publish_date': datetime.fromtimestamp(item.get('providerPublishTime', 0)).strftime('%Y-%m-%d %H:%M:%S'),
-                'sentiment': sent_label
-            })
-        return news_list
-    except Exception as e:
-        st.warning(f"新闻获取失败: {e}")
-        return []
-
-def get_x_sentiment(ticker):
-    try:
-        url = "https://api.x.ai/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {API_KEYS['xai']}", "Content-Type": "application/json"}
-        data = {
-            "model": "grok-beta",
-            "messages": [{"role": "user", "content": f"What is the current sentiment on X for stock {ticker}? One word: 正面, 负面, or 中性."}]
-        }
-        response = requests.post(url, headers=headers, json=data)
-        return response.json()['choices'][0]['message']['content'].strip()
-    except Exception as e:
-        st.warning(f"Grok API 情绪分析失败: {e}")
-        return "中性"
-
-def get_grok_remark(ticker):
-    try:
-        url = "https://api.x.ai/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {API_KEYS['xai']}", "Content-Type": "application/json"}
-        data = {
-            "model": "grok-beta",
-            "messages": [{"role": "user", "content": f"Provide a short remark for investing in {ticker}."}]
-        }
-        response = requests.post(url, headers=headers, json=data)
-        return response.json()['choices'][0]['message']['content'].strip()
-    except Exception as e:
-        st.warning(f"Grok 备注失败: {e}")
-        return "No advice."
 
 # Pages
 pages = ["首页", "基本面", "投资建议", "公共市场"]
@@ -204,8 +132,8 @@ if page == "首页":
                     new_info, _ = get_stock_data(ticker)
                     info = new_info
                     st.success("刷新成功！")
-                except:
-                    st.error("刷新失败。")
+                except Exception as e:
+                    st.error(f"刷新失败: {e}")
                 st.rerun()
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("盘前价格", f"{info.get('preMarketPrice', 'N/A'):.2f} {currency}")
@@ -251,7 +179,7 @@ elif page == "投资建议":
                 elif sentiments.count("负面") > sentiments.count("正面"):
                     news_sentiment = "负面"
             current_price = info.get('currentPrice', 0)
-            target_price = info.get('targetMeanPrice', current_price * 1.1)
+            target_price = info.get('targetMeanPrice', current_price * 1.1) if info.get('targetMeanPrice') else current_price * 1.1
             support = current_price * 0.95
             resistance = current_price * 1.05
             x_sentiment = get_x_sentiment(ticker)
@@ -308,7 +236,8 @@ elif page == "公共市场":
                         '最高': info.get('dayHigh', 0), '最低': info.get('dayLow', 0), '涨幅': f"{pct_change:.2f}%",
                         '买入等级': buy_level, '买入价': f"{buy_price:.2f}", '备注': remark
                     })
-                except:
+                except Exception as e:
+                    st.warning(f"处理 {tick} 失败: {e}")
                     continue
             if stock_data:
                 df = pd.DataFrame(stock_data)
