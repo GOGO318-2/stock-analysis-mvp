@@ -594,7 +594,7 @@ elif page == "投资建议":
         df = pd.DataFrame(data)
         
         # 添加筛选
-        trade_type = st.selectbox("选择交易类型", ["所有", "短期交易 (日内/短期)", "趋势交易 (长期)", "波段交易 (中短期)"], index=1)  # Default to "短期交易"
+        trade_type = st.selectbox("选择交易类型", ["所有", "短期交易 (日内/短期)", "趋势交易 (长期)", "波段交易 (中短期)"], index=1)  # Default to "短期交易 (日内/短期)"
         if trade_type != "所有":
             df = df[df["阶段"] == trade_type]
         
