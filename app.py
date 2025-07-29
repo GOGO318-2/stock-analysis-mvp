@@ -158,13 +158,39 @@ def get_historical_data(ticker, period):
                     return hist
         except Exception as e:
             st.warning(f"{api} 获取历史数据失败: {e}. 尝试下一个API。")
-    # Fallback to yfinance
+    # Fallback to Yahoo Finance scraping for HK stocks
     try:
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period=period)
-        return hist if not hist.empty else pd.DataFrame()
+        url = f"https://finance.yahoo.com/quote/{ticker}/history?p={ticker}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        table = soup.find('table', {'data-test': 'historical-prices'})
+        if table:
+            rows = table.find('tbody').find_all('tr')
+            hist_data = []
+            for row in rows:
+                cols = row.find_all('td')
+                if len(cols) >= 6:
+                    date = cols[0].text
+                    open_price = cols[1].text
+                    high = cols[2].text
+                    low = cols[3].text
+                    close = cols[4].text
+                    volume = cols[6].text
+                    hist_data.append({
+                        'Date': date,
+                        'Open': float(open_price.replace(',', '')),
+                        'High': float(high.replace(',', '')),
+                        'Low': float(low.replace(',', '')),
+                        'Close': float(close.replace(',', '')),
+                        'Volume': float(volume.replace(',', ''))
+                    })
+            hist = pd.DataFrame(hist_data).set_index('Date')
+            hist.index = pd.to_datetime(hist.index)
+            return hist
     except:
-        st.error("所有API均失败，无法获取历史数据。")
+        pass
+    st.error("所有API均失败，无法获取历史数据。")
     return pd.DataFrame()
 
 def get_news_and_sentiment(ticker_symbol):
