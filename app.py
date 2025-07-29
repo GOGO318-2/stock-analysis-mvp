@@ -300,9 +300,9 @@ def get_news_and_sentiment(ticker_symbol):
             sent_label = "正面" if any(kw in title_lower for kw in positive_keywords) else "负面" if any(kw in title_lower for kw in negative_keywords) else "中性"
             if title:
                 news_list.append({'title': title, 'link': link, 'publish_date': date_str, 'sentiment': sent_label})
-        return news_list
-    except:
-        return []
+            return news_list
+        except:
+            return []
 
 def get_fed_rate():
     try:
@@ -393,7 +393,6 @@ page = st.sidebar.radio("导航", pages)
 info, rec = get_stock_data(ticker)
 
 currency = info.get('currency', 'USD')  # 自动货币
-company_name = info.get('currency', 'USD')  # 自动货币
 company_name = info.get('longName', ticker) or ticker
 
 if page == "首页":
@@ -613,7 +612,7 @@ elif page == "投资建议":
                 if title:
                     st.markdown(f"- [{title}]({link}) ({date}) - {sentiment}")
     else:
-        st.error("请输入股票代码。")
+        st.error("请输入股票代码。") 
 
 elif page == "公共市场":
     st.title("公共市场 - Top 50 科技美股推荐")
@@ -630,13 +629,13 @@ elif page == "公共市场":
                     if not info:
                         continue
                     hist = get_historical_data(tick, "1wk")
-                    if hist.empty:
+                    if hist.empty or len(hist) < 2:
                         continue
                     volume_avg = hist['Volume'].mean()
                     turnover_avg = hist['Volume'].mean() * hist['Close'].mean()
-                    pct_change = (info['currentPrice'] - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2] * 100 if len(hist) > 1 else 0
+                    pct_change = (info['currentPrice'] - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2] * 100
                     sentiment = get_news_sentiment(tick)
-                    activity_score = (volume_avg / 1e8) + (2 if sentiment == "正面" else -2 if sentiment == "负面" else 0)  # Simple score
+                    activity_score = (volume_avg / 1e8) + (2 if sentiment == "正面" else -2 if sentiment == "负面" else 0)
                     buy_level = "高" if activity_score > 5 else "中" if activity_score > 2 else "低"
                     buy_price = info['currentPrice'] * 0.95
                     remark = get_grok_remark(tick)
@@ -1016,13 +1015,13 @@ elif page == "公共市场":
                     if not info:
                         continue
                     hist = get_historical_data(tick, "1wk")
-                    if hist.empty:
+                    if hist.empty or len(hist) < 2:
                         continue
                     volume_avg = hist['Volume'].mean()
                     turnover_avg = hist['Volume'].mean() * hist['Close'].mean()
-                    pct_change = (info['currentPrice'] - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2] * 100 if len(hist) > 1 else 0
+                    pct_change = (info['currentPrice'] - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2] * 100
                     sentiment = get_news_sentiment(tick)
-                    activity_score = (volume_avg / 1e8) + (2 if sentiment == "正面" else -2 if sentiment == "负面" else 0)  # Simple score
+                    activity_score = (volume_avg / 1e8) + (2 if sentiment == "正面" else -2 if sentiment == "负面" else 0)
                     buy_level = "高" if activity_score > 5 else "中" if activity_score > 2 else "低"
                     buy_price = info['currentPrice'] * 0.95
                     remark = get_grok_remark(tick)
@@ -1402,13 +1401,13 @@ elif page == "公共市场":
                     if not info:
                         continue
                     hist = get_historical_data(tick, "1wk")
-                    if hist.empty:
+                    if hist.empty or len(hist) < 2:
                         continue
                     volume_avg = hist['Volume'].mean()
                     turnover_avg = hist['Volume'].mean() * hist['Close'].mean()
-                    pct_change = (info['currentPrice'] - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2] * 100 if len(hist) > 1 else 0
+                    pct_change = (info['currentPrice'] - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2] * 100
                     sentiment = get_news_sentiment(tick)
-                    activity_score = (volume_avg / 1e8) + (2 if sentiment == "正面" else -2 if sentiment == "负面" else 0)  # Simple score
+                    activity_score = (volume_avg / 1e8) + (2 if sentiment == "正面" else -2 if sentiment == "负面" else 0)
                     buy_level = "高" if activity_score > 5 else "中" if activity_score > 2 else "低"
                     buy_price = info['currentPrice'] * 0.95
                     remark = get_grok_remark(tick)
@@ -1547,7 +1546,7 @@ def get_x_sentiment(ticker):
         return "中性"
 
 pages = ["首页", "基本面", "警报", "投资建议", "公共市场"]
-page = st.sidebar.radio("导航", pages)
+page = st.sidebar.radio("导航", pages, key="nav_radio")  # Add key to avoid duplicate ID
 
 info, rec = get_stock_data(ticker)
 
