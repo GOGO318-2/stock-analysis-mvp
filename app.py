@@ -304,42 +304,118 @@ class StockAnalyzer:
     
     def render_sidebar(self) -> str:
         """渲染侧边栏"""
-        st.sidebar.title("股票分析器")
-        st.sidebar.markdown("支持港股：输入如0700")
+        st.sidebar.title("📊 股票分析器")
+        st.sidebar.markdown("💡 *支持港股：输入如0700*")
         
         # 股票代码输入
         ticker_input = st.sidebar.text_input(
-            "输入股票代码 (例如, TSLA 或 0700)", 
-            value="TSLA"
+            "🔍 输入股票代码", 
+            value="TSLA",
+            placeholder="例如: TSLA 或 0700"
         ).upper()
         
         ticker = self.format_ticker(ticker_input)
         
-        # Watchlist功能
-        if st.sidebar.button("添加到Watchlist"):
+        # 添加到Watchlist按钮
+        col1, col2 = st.sidebar.columns([2, 1])
+        
+        if col1.button("➕ 添加到收藏", use_container_width=True):
             if ticker not in st.session_state.watchlist:
                 st.session_state.watchlist.append(ticker)
-                st.sidebar.success("添加成功！")
+                st.sidebar.success("✅ 添加成功！")
             else:
-                st.sidebar.info("已在Watchlist中")
+                st.sidebar.info("ℹ️ 已在收藏中")
         
-        # 显示Watchlist
-        st.sidebar.subheader("Watchlist")
-        for wl_ticker in st.session_state.watchlist.copy():  # 使用copy避免迭代时修改
-            col1, col2 = st.sidebar.columns([3, 1])
-            col1.text(wl_ticker)
-            
-            if col2.button("移除", key=f"remove_{wl_ticker}"):
-                st.session_state.watchlist.remove(wl_ticker)
-                st.rerun()
-            
-            if col1.button("查询", key=f"query_{wl_ticker}"):
-                st.session_state.selected_ticker = wl_ticker
-                st.rerun()
+        if col2.button("🔄", help="刷新数据"):
+            st.cache_data.clear()
+            st.sidebar.success("🔄 已刷新")
         
-        # 页面导航
-        pages = ["首页", "基本面", "投资建议", "公共市场"]
-        page = st.sidebar.radio("导航", pages)
+        # Watchlist显示 - 改进样式
+        if st.session_state.watchlist:
+            st.sidebar.markdown("---")
+            st.sidebar.markdown("### ⭐ 我的收藏")
+            
+            # 创建收藏列表的HTML样式
+            watchlist_html = """
+            <div style="max-height: 300px; overflow-y: auto;">
+            """
+            
+            for i, wl_ticker in enumerate(st.session_state.watchlist.copy()):
+                # 为每个收藏项创建样式化的显示
+                watchlist_html += f"""
+                <div style="
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                    padding: 8px 12px;
+                    margin: 5px 0;
+                    border-radius: 8px;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                    font-size: 14px;
+                    font-weight: bold;
+                ">
+                    📈 {wl_ticker}
+                </div>
+                """
+                
+                # 为每个收藏项添加操作按钮
+                col1, col2, col3 = st.sidebar.columns([2, 1, 1])
+                
+                if col1.button(f"🔍 查看", key=f"view_{wl_ticker}_{i}", use_container_width=True):
+                    st.session_state.selected_ticker = wl_ticker
+                    st.rerun()
+                
+                if col2.button("❌", key=f"remove_{wl_ticker}_{i}", help="移除"):
+                    st.session_state.watchlist.remove(wl_ticker)
+                    st.rerun()
+                
+                if col3.button("📊", key=f"chart_{wl_ticker}_{i}", help="图表"):
+                    st.session_state.selected_ticker = wl_ticker
+                    st.session_state.selected_page = "首页"
+                    st.rerun()
+            
+            watchlist_html += "</div>"
+            
+            # 清空收藏按钮
+            if st.sidebar.button("🗑️ 清空收藏", type="secondary"):
+                st.session_state.watchlist = []
+                st.sidebar.success("🧹 收藏已清空")
+                st.rerun()
+        else:
+            st.sidebar.markdown("---")
+            st.sidebar.info("💫 还没有收藏的股票\n点击上方按钮添加")
+        
+        # 页面导航 - 改进样式
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("### 🧭 页面导航")
+        
+        pages = {
+            "🏠 首页": "首页", 
+            "📊 基本面": "基本面", 
+            "💡 投资建议": "投资建议", 
+            "🌐 公共市场": "公共市场"
+        }
+        
+        # 使用radio按钮，但带图标
+        selected_page_display = st.sidebar.radio(
+            "选择页面", 
+            list(pages.keys()),
+            index=0,
+            label_visibility="collapsed"
+        )
+        
+        page = pages[selected_page_display]
+        
+        # 添加分隔线和版本信息
+        st.sidebar.markdown("---")
+        st.sidebar.markdown(
+            """
+            <div style="text-align: center; color: #666; font-size: 12px;">
+                📱 股票分析器 v2.0<br>
+                💻 AI驱动的智能分析
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
         
         return ticker, page
     
@@ -573,36 +649,112 @@ class StockAnalyzer:
             current_price, support, resistance, target_price
         )
         
-        # 交易类型筛选
-        trade_type = st.selectbox("选择交易类型", ["所有", "短期", "趋势", "波段"], index=0)
+        # 交易类型筛选 - 默认选择短期
+        trade_type = st.selectbox("选择交易类型", ["短期", "趋势", "波段"], index=0)
         
-        if trade_type != "所有":
-            advice_data = [advice for advice in advice_data if advice["阶段"] == trade_type]
+        # 过滤数据
+        filtered_advice = [advice for advice in advice_data if advice["阶段"] == trade_type]
         
-        if advice_data:
-            df = pd.DataFrame(advice_data)
-            st.table(df)
+        if filtered_advice:
+            df = pd.DataFrame(filtered_advice)
+            
+            # 使用自定义样式的表格
+            st.markdown("### 📊 投资策略建议")
+            
+            # 创建HTML表格，解决样式问题
+            table_html = """
+            <div style="background: white; padding: 20px; border-radius: 10px; margin: 20px 0;">
+                <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                    <thead>
+                        <tr style="background-color: #f8f9fa; border-bottom: 2px solid #dee2e6;">
+                            <th style="padding: 12px; text-align: left; border: 1px solid #dee2e6;">阶段</th>
+                            <th style="padding: 12px; text-align: left; border: 1px solid #dee2e6;">时机</th>
+                            <th style="padding: 12px; text-align: left; border: 1px solid #dee2e6;">价位</th>
+                            <th style="padding: 12px; text-align: left; border: 1px solid #dee2e6;">仓位</th>
+                            <th style="padding: 12px; text-align: left; border: 1px solid #dee2e6;">备注</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            """
+            
+            for _, row in df.iterrows():
+                color = "#e8f5e8" if "入场" in str(row['时机']) else "#fff2e8" if "止盈" in str(row['时机']) else "#ffe8e8"
+                table_html += f"""
+                        <tr style="background-color: {color};">
+                            <td style="padding: 12px; border: 1px solid #dee2e6;">{row['阶段']}</td>
+                            <td style="padding: 12px; border: 1px solid #dee2e6;">{row['时机']}</td>
+                            <td style="padding: 12px; border: 1px solid #dee2e6;">{row['价位']}</td>
+                            <td style="padding: 12px; border: 1px solid #dee2e6;">{row['仓位']}</td>
+                            <td style="padding: 12px; border: 1px solid #dee2e6;">{row['备注']}</td>
+                        </tr>
+                """
+            
+            table_html += """
+                    </tbody>
+                </table>
+            </div>
+            """
+            
+            st.markdown(table_html, unsafe_allow_html=True)
         
         # 显示综合建议
         recommendation = self.get_recommendation(rsi, macd, news_sentiment)
+        st.markdown("### 💡 综合分析建议")
+        
+        # 创建带样式的建议框
+        advice_color = "#d4edda" if "买入" in recommendation else "#f8d7da" if "卖出" in recommendation else "#d1ecf1"
+        border_color = "#c3e6cb" if "买入" in recommendation else "#f5c6cb" if "卖出" in recommendation else "#bee5eb"
+        
         st.markdown(
-            f"<div style='padding: 10px; background-color: #f0f0f0; border-radius: 5px;'>"
-            f"<strong>综合建议:</strong> RSI {rsi:.0f} - {recommendation}, "
-            f"目标价位 {target_price:.0f}。<br>"
-            f"<strong>AI建议:</strong> {ai_remark}"
-            f"</div>", 
+            f"""
+            <div style="
+                background-color: {advice_color}; 
+                border: 1px solid {border_color}; 
+                border-radius: 8px; 
+                padding: 15px; 
+                margin: 10px 0;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            ">
+                <h4 style="margin: 0 0 10px 0; color: #333;">🎯 投资建议</h4>
+                <p style="margin: 5px 0; font-size: 16px;"><strong>技术面:</strong> RSI {rsi:.0f} - {recommendation}</p>
+                <p style="margin: 5px 0; font-size: 16px;"><strong>目标价位:</strong> ${target_price:.2f}</p>
+                <p style="margin: 5px 0; font-size: 16px;"><strong>AI分析:</strong> {ai_remark}</p>
+                <p style="margin: 5px 0; font-size: 14px; color: #666;"><strong>市场情绪:</strong> {ai_sentiment} | <strong>新闻情绪:</strong> {news_sentiment}</p>
+            </div>
+            """, 
             unsafe_allow_html=True
         )
         
-        # 新闻情感分析
+        # 新闻情感分析 - 改进显示
         if news:
-            st.subheader("相关新闻")
-            for item in news[:3]:  # 只显示前3条
-                st.write(f"**{item['title']}**")
-                st.write(f"情感: {item['sentiment']} | 发布时间: {item['publish_date']}")
-                if item['link']:
-                    st.write(f"[查看详情]({item['link']})")
-                st.divider()
+            st.markdown("### 📰 相关新闻分析")
+            
+            for i, item in enumerate(news[:3]):
+                sentiment_color = "#28a745" if item['sentiment'] == "正面" else "#dc3545" if item['sentiment'] == "负面" else "#6c757d"
+                sentiment_icon = "📈" if item['sentiment'] == "正面" else "📉" if item['sentiment'] == "负面" else "➖"
+                
+                st.markdown(
+                    f"""
+                    <div style="
+                        background: white; 
+                        border-left: 4px solid {sentiment_color}; 
+                        padding: 15px; 
+                        margin: 10px 0; 
+                        border-radius: 0 8px 8px 0;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                    ">
+                        <h5 style="margin: 0 0 8px 0; color: #333; font-size: 16px;">{item['title']}</h5>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px;">
+                            <span style="color: {sentiment_color}; font-weight: bold;">{sentiment_icon} {item['sentiment']}</span>
+                            <span style="color: #6c757d; font-size: 12px;">{item['publish_date']}</span>
+                        </div>
+                        {f'<a href="{item["link"]}" target="_blank" style="color: #007bff; text-decoration: none; font-size: 14px;">📖 查看详情</a>' if item.get('link') else ''}
+                    </div>
+                    """, 
+                    unsafe_allow_html=True
+                )
+        else:
+            st.info("📭 暂无相关新闻数据")
     
     def analyze_news_sentiment(self, news: List[Dict]) -> str:
         """分析新闻整体情感"""
@@ -695,41 +847,182 @@ class StockAnalyzer:
     
     def render_market_page(self):
         """渲染公共市场页面"""
-        st.title("公共市场 - Top 50 科技美股推荐")
+        st.title("🌐 公共市场 - Top 50 科技美股推荐")
         
         # 更新按钮
-        col1, col2 = st.columns([1, 4])
+        col1, col2, col3 = st.columns([1, 1, 3])
         
-        update_clicked = col1.button("更新Top 50")
+        update_clicked = col1.button("🔄 更新Top 50", use_container_width=True)
         
-        if col2.button("清除缓存"):
+        if col2.button("🗑️ 清除缓存", use_container_width=True):
             st.cache_data.clear()
-            st.success("缓存已清除")
+            st.success("✅ 缓存已清除")
         
         if update_clicked:
             self.update_top50_stocks()
         
         # 显示现有数据
         if not st.session_state.top50.empty:
-            st.subheader("当前Top 50科技股")
+            st.markdown("### 📈 当前Top 50科技股")
             
             # 添加筛选选项
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                buy_level_filter = st.selectbox("买入等级筛选", ["全部", "高", "中", "低"])
+                buy_level_filter = st.selectbox("💎 买入等级筛选", ["全部", "高", "中", "低"])
             
             with col2:
-                min_price = st.number_input("最低价格", min_value=0.0, value=0.0)
+                min_price = st.number_input("💰 最低价格", min_value=0.0, value=0.0)
             
             with col3:
-                max_price = st.number_input("最高价格", min_value=0.0, value=1000.0)
+                max_price = st.number_input("💰 最高价格", min_value=0.0, value=1000.0)
             
             # 应用筛选
             filtered_df = st.session_state.top50.copy()
             
             if buy_level_filter != "全部":
                 filtered_df = filtered_df[filtered_df['买入等级'] == buy_level_filter]
+            
+            if min_price > 0:
+                filtered_df = filtered_df[filtered_df['价格'] >= min_price]
+            
+            if max_price < 1000:
+                filtered_df = filtered_df[filtered_df['价格'] <= max_price]
+            
+            # 检查买入等级低的情况并给出说明
+            low_level_count = len(filtered_df[filtered_df['买入等级'] == '低'])
+            high_level_count = len(filtered_df[filtered_df['买入等级'] == '高'])
+            
+            if high_level_count == 0 and not filtered_df.empty:
+                st.warning(
+                    "⚠️ **当前市场分析说明**: 没有发现买入等级为'高'的股票。"
+                    "这可能是由于以下原因：\n"
+                    "- 🔴 市场整体情绪偏向谨慎\n"
+                    "- 📉 技术指标显示超买状态\n"
+                    "- 📰 近期负面新闻较多\n"
+                    "- 💹 交易量相对较低\n\n"
+                    "建议等待更好的入场时机或考虑分批建仓策略。"
+                )
+            
+            if low_level_count > len(filtered_df) * 0.7:
+                st.info(
+                    "ℹ️ **市场提醒**: 当前大部分股票买入等级较低，建议谨慎操作，"
+                    "可考虑关注基本面较好的个股进行长期布局。"
+                )
+            
+            # 为每个股票添加收藏功能
+            if not filtered_df.empty:
+                st.markdown("---")
+                
+                # 创建自定义表格显示，每行添加收藏按钮
+                for idx, (_, row) in enumerate(filtered_df.iterrows()):
+                    # 根据买入等级设置颜色
+                    level_colors = {
+                        '高': ('#d4edda', '#155724', '🟢'),
+                        '中': ('#fff3cd', '#856404', '🟡'), 
+                        '低': ('#f8d7da', '#721c24', '🔴')
+                    }
+                    
+                    bg_color, text_color, icon = level_colors.get(row['买入等级'], ('#f8f9fa', '#212529', '⚪'))
+                    
+                    # 创建股票信息卡片
+                    col1, col2 = st.columns([4, 1])
+                    
+                    with col1:
+                        st.markdown(
+                            f"""
+                            <div style="
+                                background: {bg_color}; 
+                                border: 1px solid {text_color}20; 
+                                border-radius: 10px; 
+                                padding: 15px; 
+                                margin: 10px 0;
+                                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                            ">
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <div>
+                                        <h4 style="margin: 0; color: {text_color};">
+                                            {icon} {row['股票代码']} - {row['公司名称']}
+                                        </h4>
+                                        <p style="margin: 5px 0; color: {text_color};">
+                                            💰 价格: ${row['价格']:.2f} | 📊 涨幅: {row['涨幅']} | 
+                                            🎯 买入等级: <strong>{row['买入等级']}</strong>
+                                        </p>
+                                        <p style="margin: 5px 0; color: {text_color};">
+                                            📈 建议买入价: ${row['买入价']} | 💼 市值: {row['市值']}
+                                        </p>
+                                        <p style="margin: 5px 0; color: {text_color}; font-size: 12px;">
+                                            💡 {row['备注']}
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+                    
+                    with col2:
+                        # 收藏按钮
+                        is_favorited = row['股票代码'] in st.session_state.watchlist
+                        
+                        if is_favorited:
+                            if st.button(f"⭐ 已收藏", key=f"fav_{row['股票代码']}_{idx}", 
+                                       type="secondary", use_container_width=True):
+                                st.session_state.watchlist.remove(row['股票代码'])
+                                st.success(f"📤 已取消收藏 {row['股票代码']}")
+                                st.rerun()
+                        else:
+                            if st.button(f"⭐ 收藏", key=f"unfav_{row['股票代码']}_{idx}", 
+                                       use_container_width=True):
+                                st.session_state.watchlist.append(row['股票代码'])
+                                st.success(f"📥 已收藏 {row['股票代码']}")
+                                st.rerun()
+                        
+                        # 快速查看按钮
+                        if st.button(f"🔍 查看", key=f"view_{row['股票代码']}_{idx}", 
+                                   use_container_width=True):
+                            st.session_state.selected_ticker = row['股票代码']
+                            st.session_state.selected_page = "首页"
+                            st.rerun()
+            
+            # 添加统计信息
+            st.markdown("---")
+            st.markdown("### 📊 统计信息")
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("📈 总股票数", len(filtered_df))
+            
+            with col2:
+                high_level_count = len(filtered_df[filtered_df['买入等级'] == '高'])
+                st.metric("🟢 高等级股票", high_level_count)
+            
+            with col3:
+                avg_price = filtered_df['价格'].mean() if not filtered_df.empty else 0
+                st.metric("💰 平均价格", f"${avg_price:.2f}")
+            
+            with col4:
+                positive_change = len(filtered_df[filtered_df['涨幅'].str.contains(r'^[^-]', na=False)])
+                st.metric("📈 上涨股票", positive_change)
+        
+        else:
+            st.markdown(
+                """
+                <div style="
+                    text-align: center; 
+                    padding: 40px; 
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white; 
+                    border-radius: 15px;
+                    margin: 20px 0;
+                ">
+                    <h2>🚀 开始分析</h2>
+                    <p>点击上方 '🔄 更新Top 50' 按钮获取最新的科技股分析数据</p>
+                    <p>我们将为您分析市场情绪、技术指标和AI建议</p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )['买入等级'] == buy_level_filter]
             
             if min_price > 0:
                 filtered_df = filtered_df[filtered_df['价格'] >= min_price]
