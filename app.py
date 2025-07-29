@@ -47,11 +47,8 @@ API_KEYS = {
     "xai": "xai-N36diIqx3wkZz6eBGQfjadqdNe3H84FYfPsXXauU02ag1s5k45zida3aYocHu5Bi9AhT6jO5kFpjW7CD"
 }
 
-# API order: Prioritize alpha_vantage for HK stocks
-if '.HK' in ticker:
-    API_ORDER = ["alpha_vantage", "yfinance", "finnhub", "polygon"]
-else:
-    API_ORDER = ["yfinance", "alpha_vantage", "finnhub", "polygon"]
+# API order: Prioritize yfinance for all, fallback to others
+API_ORDER = ["yfinance", "alpha_vantage", "finnhub", "polygon"]
 
 @st.cache_data
 def get_stock_data(ticker):
@@ -108,14 +105,7 @@ def get_stock_data(ticker):
                 return info, recommendations
         except Exception as e:
             st.warning(f"{api} 获取股票数据失败: {e}. 尝试下一个API。")
-    # Fallback to yfinance only if all fail
-    try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
-        recommendations = stock.recommendations_summary if hasattr(stock, 'recommendations_summary') and not stock.recommendations.empty else pd.DataFrame()
-        return info, recommendations
-    except:
-        st.error("所有API均失败，无法获取股票数据。")
+    st.error("所有API均失败，无法获取股票数据。")
     return {}, pd.DataFrame()
 
 @st.cache_data
@@ -559,9 +549,9 @@ elif page == "投资建议":
         df = pd.DataFrame(data)
         
         # 添加筛选
-        trade_type = st.selectbox("选择交易类型", ["所有", "短期交易", "趋势交易", "波段交易"])
+        trade_type = st.selectbox("选择交易类型", ["所有", "短期交易 (日内/短期)", "趋势交易 (长期)", "波段交易 (中短期)"])
         if trade_type != "所有":
-            df = df[df["阶段"].str.contains(trade_type, na=False)]
+            df = df[df["阶段"] == trade_type]
         
         st.table(df)
         
