@@ -254,7 +254,7 @@ def get_news_and_sentiment(ticker_symbol):
                 negative_keywords = ['negative', 'bearish', 'drop', 'loss', 'down', 'sell', 'decline']
                 for item in data:
                     title_lower = item.get('title', '').lower()
-                    sent_label = "正面" if any(kw in title_lower for kw in positive_keywords) else "负面" if any(kw in title_lower for kw in positive_keywords) else "中性"
+                    sent_label = "正面" if any(kw in title_lower for kw in positive_keywords) else "负面" if any(kw in title_lower for kw in negative_keywords) else "中性"
                     news_list.append({
                         'title': item.get('title', ''),
                         'link': item.get('article_url', ''),
@@ -405,7 +405,7 @@ if page == "首页":
         "月K": "1y",
         "季K": "5y"
     }
-    default_index = list(period_options.keys()).index("日K")
+    default_index = list(period_options.keys()).index("月K")
     selected_label = st.selectbox("选择时间范围", list(period_options.keys()), index=default_index)
     selected_period = period_options[selected_label]
     hist = get_historical_data(ticker, selected_period)
@@ -594,7 +594,7 @@ elif page == "投资建议":
         df = pd.DataFrame(data)
         
         # 添加筛选
-        trade_type = st.selectbox("选择交易类型", ["所有", "短期交易 (日内/短期)", "趋势交易 (长期)", "波段交易 (中短期)"])
+        trade_type = st.selectbox("选择交易类型", ["所有", "短期交易 (日内/短期)", "趋势交易 (长期)", "波段交易 (中短期)"], index=1)  # Default to "短期交易"
         if trade_type != "所有":
             df = df[df["阶段"] == trade_type]
         
