@@ -387,7 +387,7 @@ def get_x_sentiment(ticker):
         st.warning(f"Grok API 情绪分析失败: {e}")
         return "中性"
 
-pages = ["首页", "基本面", "警报", "投资建议"]
+pages = ["首页", "基本面", "警报", "投资建议", "公共市场"]
 page = st.sidebar.radio("导航", pages)
 
 info, rec = get_stock_data(ticker)
