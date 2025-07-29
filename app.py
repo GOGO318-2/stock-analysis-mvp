@@ -8,10 +8,12 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 import json  # Added for Grok API
+import asyncio  # For asynchronous calls
 
 st.set_page_config(page_title="股票分析MVP", layout="wide")
 
 st.sidebar.title("股票分析器")
+st.sidebar.markdown("支持港股：输入如0700")
 ticker_input = st.sidebar.text_input("输入股票代码 (例如, TSLA 或 0700)", value="TSLA").upper()
 
 # 自动添加.HK for港股, 去除leading zero
@@ -49,11 +51,19 @@ API_KEYS = {
 # API order: Prioritize yfinance for all, fallback to others
 API_ORDER = ["yfinance", "alpha_vantage", "finnhub", "polygon"]
 
+# User agents for rotation to avoid blocks
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/47.0.2526.111 Safari/537.36'
+]
+
 @st.cache_data
 def get_stock_data(ticker):
-    for api in API_ORDER:
-        time.sleep(5)  # Delay to avoid rate limits
+    used_api = None
+    for attempt, api in enumerate(API_ORDER):
         try:
+            time.sleep(2 ** attempt)  # Exponential backoff
             info = {}
             recommendations = pd.DataFrame()
             if api == "yfinance":
@@ -101,21 +111,49 @@ def get_stock_data(ticker):
                 info['postMarketPrice'] = 'N/A'
 
             if info:
+                used_api = api
+                st.sidebar.text(f"使用API for data: {used_api}")
                 return info, recommendations
         except Exception as e:
             st.warning(f"{api} 获取股票数据失败: {e}. 尝试下一个API。")
-    st.error("所有API均失败，无法获取股票数据。")
+    # Fallback to scraping Yahoo Finance page
+    try:
+        url = f"https://finance.yahoo.com/quote/{ticker}"
+        headers = {'User-Agent': np.random.choice(USER_AGENTS)}
+        response = requests.get(url, headers=headers)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        info = {}
+        price_elem = soup.find('fin-streamer', {'data-field': 'regularMarketPrice'})
+        info['currentPrice'] = float(price_elem.text.replace(',', '')) if price_elem else 0
+        high_elem = soup.find('fin-streamer', {'data-field': 'regularMarketDayHigh'})
+        info['dayHigh'] = float(high_elem.text.replace(',', '')) if high_elem else 0
+        low_elem = soup.find('fin-streamer', {'data-field': 'regularMarketDayLow'})
+        info['dayLow'] = float(low_elem.text.replace(',', '')) if low_elem else 0
+        mcap_elem = soup.find('fin-streamer', {'data-field': 'marketCap'})
+        info['marketCap'] = mcap_elem.text if mcap_elem else 'N/A'
+        name_elem = soup.find('h1', {'class': 'D(ib) Fz(18px)'})
+        info['longName'] = name_elem.text if name_elem else ticker
+        info['preMarketPrice'] = 'N/A'
+        info['postMarketPrice'] = 'N/A'
+        st.sidebar.text("使用Fallback: Yahoo Scraping")
+        return info, pd.DataFrame()
+    except Exception as e:
+        st.error(f"刮取Yahoo Finance失败: {e}")
     return {}, pd.DataFrame()
 
 @st.cache_data
 def get_historical_data(ticker, period):
-    for api in API_ORDER:
-        time.sleep(5)  # Delay to avoid rate limits
+    used_api = None
+    for attempt, api in enumerate(API_ORDER):
         try:
+            time.sleep(2 ** attempt)  # Exponential backoff
             if api == "yfinance":
                 stock = yf.Ticker(ticker)
                 hist = stock.history(period=period)
-                return hist if not hist.empty else pd.DataFrame()
+                if not hist.empty:
+                    used_api = api
+                    st.sidebar.text(f"使用API for historical: {used_api}")
+                    return hist
             elif api == "finnhub":
                 from_date = (datetime.now() - timedelta(days=30 if period == "1mo" else 365 if period == "1y" else 90 if period == "3mo" else 182 if period == "6mo" else 5 if period == "5d" else 1)).strftime('%Y-%m-%d')
                 url = f"https://finnhub.io/api/v1/stock/candle?symbol={ticker}&resolution=D&from={int(time.mktime(time.strptime(from_date, '%Y-%m-%d')))}&to={int(time.time())}&token={API_KEYS['finnhub']}"
@@ -128,6 +166,8 @@ def get_historical_data(ticker, period):
                         'Close': data['c'],
                         'Volume': data['v']
                     }, index=pd.to_datetime([datetime.fromtimestamp(ts) for ts in data['t']]))
+                    used_api = api
+                    st.sidebar.text(f"使用API for historical: {used_api}")
                     return hist
             elif api == "alpha_vantage":
                 function = "TIME_SERIES_DAILY"
@@ -138,6 +178,8 @@ def get_historical_data(ticker, period):
                     hist = pd.DataFrame.from_dict(data, orient='index').astype(float)
                     hist.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
                     hist.index = pd.to_datetime(hist.index)
+                    used_api = api
+                    st.sidebar.text(f"使用API for historical: {used_api}")
                     return hist.sort_index()
             elif api == "polygon":
                 multiplier = 1
@@ -154,13 +196,15 @@ def get_historical_data(ticker, period):
                         'Close': [d['c'] for d in data],
                         'Volume': [d['v'] for d in data]
                     }, index=pd.to_datetime([datetime.fromtimestamp(d['t']/1000) for d in data]))
+                    used_api = api
+                    st.sidebar.text(f"使用API for historical: {used_api}")
                     return hist
         except Exception as e:
             st.warning(f"{api} 获取历史数据失败: {e}. 尝试下一个API。")
     # Fallback to scraping Yahoo Finance history page
     try:
         url = f"https://finance.yahoo.com/quote/{ticker}/history?p={ticker}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        headers = {'User-Agent': np.random.choice(USER_AGENTS)}
         response = requests.get(url, headers=headers)
         soup = BeautifulSoup(response.text, 'html.parser')
         table = soup.find('table', {'data-test': 'historical-prices'})
@@ -184,16 +228,20 @@ def get_historical_data(ticker, period):
                         'Volume': float(volume)
                     })
             hist = pd.DataFrame(hist_data, index=pd.to_datetime([datetime.strptime(d, '%b %d, %Y') for d in [row.find_all('td')[0].text for row in rows if len(row.find_all('td')) >= 7]]))
+            st.sidebar.text("使用Fallback: Yahoo Scraping for historical")
             return hist
     except Exception as e:
         st.warning(f"刮取Yahoo历史数据失败: {e}")
     st.error("所有API均失败，无法获取历史数据。")
     return pd.DataFrame()
 
+@st.cache_data
 def get_news_and_sentiment(ticker_symbol):
-    for api in API_ORDER:
-        time.sleep(5)  # Delay to avoid rate limits
+    used_api = None
+    news_list = []
+    for attempt, api in enumerate(API_ORDER):
         try:
+            time.sleep(2 ** attempt)  # Exponential backoff
             news_list = []
             if api == "finnhub":
                 url = f"https://finnhub.io/api/v1/company-news?symbol={ticker_symbol}&from={(datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')}&to={datetime.now().strftime('%Y-%m-%d')}&token={API_KEYS['finnhub']}"
@@ -209,8 +257,6 @@ def get_news_and_sentiment(ticker_symbol):
                         'publish_date': datetime.fromtimestamp(item.get('datetime', 0)).strftime('%Y-%m-%d %H:%M:%S'),
                         'sentiment': sent_label
                     })
-                if news_list:
-                    return news_list
             elif api == "alpha_vantage":
                 url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker_symbol}&apikey={API_KEYS['alpha_vantage']}"
                 data = requests.get(url).json().get('feed', [])[:5]
@@ -223,8 +269,6 @@ def get_news_and_sentiment(ticker_symbol):
                         'publish_date': item.get('time_published', '')[:10],
                         'sentiment': sent_label
                     })
-                if news_list:
-                    return news_list
             elif api == "polygon":
                 url = f"https://api.polygon.io/v2/reference/news?ticker={ticker_symbol}&apiKey={API_KEYS['polygon']}"
                 data = requests.get(url).json().get('results', [])[:5]
@@ -239,8 +283,6 @@ def get_news_and_sentiment(ticker_symbol):
                         'publish_date': item.get('published_utc', '')[:10],
                         'sentiment': sent_label
                     })
-                if news_list:
-                    return news_list
             elif api == "yfinance":
                 stock = yf.Ticker(ticker_symbol)
                 yf_news = stock.news[:5]
@@ -255,14 +297,17 @@ def get_news_and_sentiment(ticker_symbol):
                         'publish_date': datetime.fromtimestamp(item.get('providerPublishTime', 0)).strftime('%Y-%m-%d %H:%M:%S'),
                         'sentiment': sent_label
                     })
-                if news_list:
-                    return news_list
+            if news_list:
+                used_api = api
+                st.sidebar.text(f"使用API for news: {used_api}")
+                return news_list
         except Exception as e:
             st.warning(f"{api} 获取新闻失败: {e}. 尝试下一个API。")
     # Fallback to Yahoo scraping if all fail
     try:
         url = f"https://finance.yahoo.com/quote/{ticker_symbol}/news"
-        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+        headers = {'User-Agent': np.random.choice(USER_AGENTS)}
+        response = requests.get(url, headers=headers)
         soup = BeautifulSoup(response.text, 'html.parser')
         news_items = soup.find_all('li', class_='js-stream-content')
         news_list = []
@@ -278,14 +323,38 @@ def get_news_and_sentiment(ticker_symbol):
             sent_label = "正面" if any(kw in title_lower for kw in positive_keywords) else "负面" if any(kw in title_lower for kw in negative_keywords) else "中性"
             if title:
                 news_list.append({'title': title, 'link': link, 'publish_date': date_str, 'sentiment': sent_label})
-        return news_list
+        if news_list:
+            st.sidebar.text("使用Fallback: Yahoo Scraping for news")
+            # Use Grok to summarize sentiment if scraping succeeds
+            titles = [n['title'] for n in news_list]
+            grok_sent = get_grok_news_sentiment(titles)
+            for i, n in enumerate(news_list):
+                news_list[i]['sentiment'] = grok_sent[i] if i < len(grok_sent) else n['sentiment']
+            return news_list
     except:
+        pass
+    return []
+
+def get_grok_news_sentiment(titles):
+    try:
+        url = "https://api.x.ai/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {API_KEYS['xai']}", "Content-Type": "application/json"}
+        data = {
+            "model": "grok-beta",
+            "messages": [{"role": "user", "content": f"Summarize sentiment for these news titles as list of '正面', '负面', or '中性': {titles}"}]
+        }
+        response = requests.post(url, headers=headers, json=data)
+        content = response.json()['choices'][0]['message']['content'].split(',')
+        return [c.strip() for c in content]
+    except Exception as e:
+        st.warning(f"Grok总结新闻情绪失败: {e}")
         return []
 
 def get_fed_rate():
     try:
         url = "https://www.federalreserve.gov/monetarypolicy/fomc.htm"
-        response = requests.get(url)
+        headers = {'User-Agent': np.random.choice(USER_AGENTS)}
+        response = requests.get(url, headers=headers)
         soup = BeautifulSoup(response.text, 'html.parser')
         rate_text = soup.find(string=lambda text: "Target range for the federal funds rate" in text if text else None)
         if rate_text:
@@ -550,9 +619,21 @@ elif page == "投资建议":
         support = current_price * 0.95
         resistance = current_price * 1.05
         
-        short_memo = f"RSI {rsi:.0f}表示{('超卖反弹' if rsi < 40 else '超买回调' if rsi > 60 else '稳定波动')}，关注成交量放大，风险{news_sentiment}情绪。"
-        trend_memo = f"PE {pe:.1f}支持长期{('增长' if buy_rating > sell_rating else '谨慎')}，ROE稳定，持仓3-6月忽略波动。"
-        swing_memo = f"MACD {macd:.2f}交叉，波段捕捉{('上涨' if macd > 0 else '下行')}机会，分批操作，X情绪{news_sentiment}。"
+        # Use Grok for dynamic memos
+        try:
+            url = "https://api.x.ai/v1/chat/completions"
+            headers = {"Authorization": f"Bearer {API_KEYS['xai']}", "Content-Type": "application/json"}
+            data = {
+                "model": "grok-beta",
+                "messages": [{"role": "user", "content": f"Generate short, trend, and swing trading memos for {ticker} based on RSI {rsi}, MACD {macd}, PE {pe}, sentiment {news_sentiment}. Return as JSON: {{'short': 'memo', 'trend': 'memo', 'swing': 'memo'}}"}]
+            }
+            response = requests.post(url, headers=headers, json=data)
+            grok_memos = json.loads(response.json()['choices'][0]['message']['content'])
+            short_memo = grok_memos.get('short', short_memo)
+            trend_memo = grok_memos.get('trend', trend_memo)
+            swing_memo = grok_memos.get('swing', swing_memo)
+        except:
+            pass  # Use default if Grok fails
         
         short_trigger = f"RSI<40且MACD金叉" if rsi < 50 else f"RSI>60或MA5死叉"
         trend_trigger = f"MA20上穿且ROE>20%" if buy_rating > sell_rating else f"跌破支持位{support:.0f}"
