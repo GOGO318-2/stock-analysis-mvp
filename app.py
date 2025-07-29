@@ -316,6 +316,7 @@ elif page == "投资建议":
     st.title(f"{company_name} ({ticker}) 当天投资建议 (2025-07-28)")
     if info:
         hist = get_historical_data(ticker, "1mo")
+        news = get_news(ticker)  # 添加这里以定义 news
         current_price = info.get('currentPrice', 0)
         pe = info.get('trailingPE', 0)
         eps = info.get('trailingEps', 0)
