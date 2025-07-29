@@ -5,7 +5,6 @@ import numpy as np
 import yfinance as yf
 import time
 import requests
-from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
 st.set_page_config(page_title="股票分析MVP", layout="wide")
@@ -38,55 +37,179 @@ for wl_ticker in st.session_state.watchlist:
         st.session_state.watchlist.remove(wl_ticker)
         st.rerun()
 
+# API keys
+API_KEYS = {
+    "finnhub": "d1p1qv9r01qi9vk2517gd1p1qv9r01qi9vk25180",
+    "alpha_vantage": "Z45S0SLJGM378PIO",
+    "polygon": "2CDgF277xEhkhKndj5yFMVONxBGFFShg"
+}
+
+# List of APIs in order of priority
+API_ORDER = ["finnhub", "alpha_vantage", "polygon", "yfinance"]
+
 @st.cache_data
 def get_stock_data(ticker):
-    try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
-        recommendations = stock.recommendations_summary if not stock.recommendations.empty else pd.DataFrame()
-        return info, recommendations
-    except Exception as e:
-        st.error(f"数据拉取失败: {e}. 请检查代码或网络。")
-        return {}, pd.DataFrame()
+    for api in API_ORDER:
+        try:
+            if api == "yfinance":
+                stock = yf.Ticker(ticker)
+                info = stock.info
+                recommendations = stock.recommendations_summary if hasattr(stock, 'recommendations_summary') and not stock.recommendations.empty else pd.DataFrame()
+                return info, recommendations
+            elif api == "finnhub":
+                url = f"https://finnhub.io/api/v1/stock/profile2?symbol={ticker}&token={API_KEYS['finnhub']}"
+                response = requests.get(url)
+                info = response.json()
+                # Recommendations not directly available, skip or mock
+                recommendations = pd.DataFrame()
+                return info, recommendations
+            elif api == "alpha_vantage":
+                url = f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={API_KEYS['alpha_vantage']}"
+                response = requests.get(url)
+                info = response.json()
+                recommendations = pd.DataFrame()
+                return info, recommendations
+            elif api == "polygon":
+                url = f"https://api.polygon.io/v1/meta/symbols/{ticker}?apiKey={API_KEYS['polygon']}"
+                response = requests.get(url)
+                info = response.json()
+                recommendations = pd.DataFrame()
+                return info, recommendations
+        except Exception as e:
+            st.warning(f"{api} 获取股票数据失败: {e}. 尝试下一个API。")
+    st.error("所有API均失败，无法获取股票数据。")
+    return {}, pd.DataFrame()
 
 @st.cache_data
 def get_historical_data(ticker, period):
-    try:
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period=period)
-        if not hist.empty:
-            return hist
-        else:
-            return pd.DataFrame()
-    except Exception as e:
-        st.error(f"历史数据拉取失败: {e}.")
-        return pd.DataFrame()
+    for api in API_ORDER:
+        try:
+            if api == "yfinance":
+                stock = yf.Ticker(ticker)
+                hist = stock.history(period=period)
+                return hist if not hist.empty else pd.DataFrame()
+            elif api == "finnhub":
+                from_date = (datetime.now() - timedelta(days=30 if period == "1mo" else 365)).strftime('%Y-%m-%d')  # Approximate
+                url = f"https://finnhub.io/api/v1/stock/candle?symbol={ticker}&resolution=D&from={int(time.mktime(time.strptime(from_date, '%Y-%m-%d')))}&to={int(time.time())}&token={API_KEYS['finnhub']}"
+                response = requests.get(url)
+                data = response.json()
+                if 'c' in data:
+                    hist = pd.DataFrame({
+                        'Open': data['o'],
+                        'High': data['h'],
+                        'Low': data['l'],
+                        'Close': data['c'],
+                        'Volume': data['v']
+                    }, index=pd.to_datetime([datetime.fromtimestamp(ts) for ts in data['t']]))
+                    return hist
+            elif api == "alpha_vantage":
+                url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={ticker}&outputsize=compact&apikey={API_KEYS['alpha_vantage']}"
+                response = requests.get(url)
+                data = response.json().get('Time Series (Daily)', {})
+                hist = pd.DataFrame.from_dict(data, orient='index').astype(float)
+                hist.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+                hist.index = pd.to_datetime(hist.index)
+                return hist
+            elif api == "polygon":
+                from_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+                to_date = datetime.now().strftime('%Y-%m-%d')
+                url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{from_date}/{to_date}?apiKey={API_KEYS['polygon']}"
+                response = requests.get(url)
+                data = response.json().get('results', [])
+                hist = pd.DataFrame({
+                    'Open': [d['o'] for d in data],
+                    'High': [d['h'] for d in data],
+                    'Low': [d['l'] for d in data],
+                    'Close': [d['c'] for d in data],
+                    'Volume': [d['v'] for d in data]
+                }, index=pd.to_datetime([datetime.fromtimestamp(d['t']/1000) for d in data]))
+                return hist
+        except Exception as e:
+            st.warning(f"{api} 获取历史数据失败: {e}. 尝试下一个API。")
+    st.error("所有API均失败，无法获取历史数据。")
+    return pd.DataFrame()
 
-def get_news(ticker_symbol):
-    try:
-        stock = yf.Ticker(ticker_symbol)
-        news_list = stock.news  # 使用 yfinance 内置新闻 API
-        if not news_list:
-            return []
-        # 过滤最近新闻（假设取前5条）
-        recent_news = news_list[:5]
-        formatted_news = []
-        for item in recent_news:
-            formatted_news.append({
-                'title': item.get('title', ''),
-                'link': item.get('link', ''),
-                'publish_date': datetime.fromtimestamp(item.get('providerPublishTime', 0)).strftime('%Y-%m-%d %H:%M:%S') if item.get('providerPublishTime') else ''
-            })
-        return formatted_news
-    except Exception as e:
-        st.warning(f"新闻获取失败: {e}. 尝试备用方法。")
-        return []  # 如果失败，返回空列表
+def get_news_and_sentiment(ticker_symbol):
+    for api in API_ORDER:
+        try:
+            if api == "finnhub":
+                url = f"https://finnhub.io/api/v1/company-news?symbol={ticker_symbol}&from={(datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')}&to={datetime.now().strftime('%Y-%m-%d')}&token={API_KEYS['finnhub']}"
+                response = requests.get(url)
+                data = response.json()
+                news_list = []
+                for item in data[:5]:
+                    # Finnhub may have sentiment in some endpoints, but for company-news, use keywords
+                    title_lower = item.get('headline', '').lower()
+                    positive_keywords = ['positive', 'bullish', 'surge', 'gain', 'up', 'buy', 'growth']
+                    negative_keywords = ['negative', 'bearish', 'drop', 'loss', 'down', 'sell', 'decline']
+                    sent_label = "正面" if any(kw in title_lower for kw in positive_keywords) else "负面" if any(kw in title_lower for kw in negative_keywords) else "中性"
+                    news_list.append({
+                        'title': item.get('headline', ''),
+                        'link': item.get('related', ''),
+                        'publish_date': datetime.fromtimestamp(item.get('datetime', 0)).strftime('%Y-%m-%d %H:%M:%S'),
+                        'sentiment': sent_label
+                    })
+                if news_list:
+                    return news_list
+            elif api == "alpha_vantage":
+                url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker_symbol}&apikey={API_KEYS['alpha_vantage']}"
+                response = requests.get(url)
+                data = response.json().get('feed', [])[:5]
+                news_list = []
+                for item in data:
+                    sent_label = "正面" if item.get('overall_sentiment_score', 0) > 0 else "负面" if item.get('overall_sentiment_score', 0) < 0 else "中性"
+                    news_list.append({
+                        'title': item.get('title', ''),
+                        'link': item.get('url', ''),
+                        'publish_date': item.get('time_published', '')[:10],
+                        'sentiment': sent_label
+                    })
+                if news_list:
+                    return news_list
+            elif api == "polygon":
+                url = f"https://api.polygon.io/v2/reference/news?ticker={ticker_symbol}&apiKey={API_KEYS['polygon']}"
+                response = requests.get(url)
+                data = response.json().get('results', [])[:5]
+                news_list = []
+                for item in data:
+                    title_lower = item.get('title', '').lower()
+                    positive_keywords = ['positive', 'bullish', 'surge', 'gain', 'up', 'buy', 'growth']
+                    negative_keywords = ['negative', 'bearish', 'drop', 'loss', 'down', 'sell', 'decline']
+                    sent_label = "正面" if any(kw in title_lower for kw in positive_keywords) else "负面" if any(kw in title_lower for kw in negative_keywords) else "中性"
+                    news_list.append({
+                        'title': item.get('title', ''),
+                        'link': item.get('article_url', ''),
+                        'publish_date': item.get('published_utc', '')[:10],
+                        'sentiment': sent_label
+                    })
+                if news_list:
+                    return news_list
+            elif api == "yfinance":
+                stock = yf.Ticker(ticker_symbol)
+                yf_news = stock.news[:5]
+                news_list = []
+                positive_keywords = ['positive', 'bullish', 'surge', 'gain', 'up', 'buy', 'growth']
+                negative_keywords = ['negative', 'bearish', 'drop', 'loss', 'down', 'sell', 'decline']
+                for item in yf_news:
+                    title_lower = item.get('title', '').lower()
+                    sent_label = "正面" if any(kw in title_lower for kw in positive_keywords) else "负面" if any(kw in title_lower for kw in negative_keywords) else "中性"
+                    news_list.append({
+                        'title': item.get('title', ''),
+                        'link': item.get('link', ''),
+                        'publish_date': datetime.fromtimestamp(item.get('providerPublishTime', 0)).strftime('%Y-%m-%d %H:%M:%S'),
+                        'sentiment': sent_label
+                    })
+                if news_list:
+                    return news_list
+        except Exception as e:
+            st.warning(f"{api} 获取新闻失败: {e}. 尝试下一个API。")
+    return []
 
 def get_fed_rate():
     try:
         url = "https://www.federalreserve.gov/monetarypolicy/fomc.htm"
         response = requests.get(url)
-        soup = BeautifulSoup(response.text, 'html.parser')
+        soup = requests.compat.BeautifulSoup(response.text, 'html.parser')
         rate_text = soup.find(string=lambda text: "Target range for the federal funds rate" in text if text else None)
         if rate_text:
             return rate_text.parent.find_next_sibling('p').text.strip()
@@ -223,7 +346,7 @@ if page == "首页":
                 with st.spinner('刷新中...'):
                     time.sleep(1)  # 模拟延迟
                     try:
-                        new_info = yf.Ticker(ticker).info
+                        new_info = get_stock_data(ticker)[0]
                         st.session_state.prev_current = current_price
                         st.session_state.prev_pre = info.get('preMarketPrice', 0)
                         st.session_state.prev_post = info.get('postMarketPrice', 0)
@@ -316,19 +439,17 @@ elif page == "投资建议":
     st.title(f"{company_name} ({ticker}) 当天投资建议 ({today})")
     if info:
         hist = get_historical_data(ticker, "1mo")
-        news = get_news(ticker)  # 获取新闻
+        news = get_news_and_sentiment(ticker)
         if not news:
             st.warning("无最新新闻可用，可能因 API 限制。")
         
-        # 增强情绪分析：更多关键词
-        positive_keywords = ['positive', 'bullish', 'surge', 'gain', 'up', 'buy', 'growth']
-        negative_keywords = ['negative', 'bearish', 'drop', 'loss', 'down', 'sell', 'decline']
+        # 计算整体新闻情绪
         news_sentiment = "中性"
         if news:
-            titles_lower = [n.get('title', '').lower() for n in news]
-            if any(any(kw in title for kw in positive_keywords) for title in titles_lower):
+            sentiments = [n['sentiment'] for n in news]
+            if sentiments.count("正面") > sentiments.count("负面"):
                 news_sentiment = "正面"
-            elif any(any(kw in title for kw in negative_keywords) for title in titles_lower):
+            elif sentiments.count("负面") > sentiments.count("正面"):
                 news_sentiment = "负面"
         
         current_price = info.get('currentPrice', 0)
@@ -372,7 +493,8 @@ elif page == "投资建议":
                 title = item.get('title', '')
                 link = item.get('link', '')
                 date = item.get('publish_date', '')
+                sentiment = item.get('sentiment', '中性')
                 if title:
-                    st.markdown(f"- [{title}]({link}) ({date})")
+                    st.markdown(f"- [{title}]({link}) ({date}) - {sentiment}")
     else:
         st.error("请输入股票代码。")
