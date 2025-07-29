@@ -254,7 +254,7 @@ def get_news_and_sentiment(ticker_symbol):
                 negative_keywords = ['negative', 'bearish', 'drop', 'loss', 'down', 'sell', 'decline']
                 for item in data:
                     title_lower = item.get('title', '').lower()
-                    sent_label = "正面" if any(kw in title_lower for kw in positive_keywords) else "负面" if any(kw in title_lower for kw in negative_keywords) else "中性"
+                    sent_label = "正面" if any(kw in title_lower for kw in positive_keywords) else "负面" if any(kw in title_lower for kw in positive_keywords) else "中性"
                     news_list.append({
                         'title': item.get('title', ''),
                         'link': item.get('article_url', ''),
