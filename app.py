@@ -5,6 +5,7 @@ import numpy as np
 import yfinance as yf
 import time
 import requests
+from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
 st.set_page_config(page_title="股票分析MVP", layout="wide")
@@ -44,12 +45,16 @@ API_KEYS = {
     "polygon": "2CDgF277xEhkhKndj5yFMVONxBGFFShg"
 }
 
-# API order: Prioritize yfinance for comprehensive fields
-API_ORDER = ["yfinance", "finnhub", "alpha_vantage", "polygon"]
+# API order: Prioritize alpha_vantage for HK stocks
+if '.HK' in ticker:
+    API_ORDER = ["alpha_vantage", "yfinance", "finnhub", "polygon"]
+else:
+    API_ORDER = ["yfinance", "alpha_vantage", "finnhub", "polygon"]
 
 @st.cache_data
 def get_stock_data(ticker):
     for api in API_ORDER:
+        time.sleep(5)  # Delay to avoid rate limits
         try:
             info = {}
             recommendations = pd.DataFrame()
@@ -59,49 +64,39 @@ def get_stock_data(ticker):
                 if hasattr(stock, 'recommendations_summary') and not stock.recommendations.empty:
                     recommendations = stock.recommendations_summary
             elif api == "finnhub":
-                # Quote for prices
                 quote_url = f"https://finnhub.io/api/v1/quote?symbol={ticker}&token={API_KEYS['finnhub']}"
                 quote_resp = requests.get(quote_url).json()
-                # Profile for info
                 profile_url = f"https://finnhub.io/api/v1/stock/profile2?symbol={ticker}&token={API_KEYS['finnhub']}"
                 profile_resp = requests.get(profile_url).json()
-                # Normalize keys
-                info['currentPrice'] = quote_resp.get('c')
-                info['dayHigh'] = quote_resp.get('h')
-                info['dayLow'] = quote_resp.get('l')
+                info['currentPrice'] = quote_resp.get('c', 0)
+                info['dayHigh'] = quote_resp.get('h', 0)
+                info['dayLow'] = quote_resp.get('l', 0)
                 info['marketCap'] = profile_resp.get('marketCapitalization')
                 info['longName'] = profile_resp.get('name')
-                # No pre/post market in basic quote, set N/A
                 info['preMarketPrice'] = 'N/A'
                 info['postMarketPrice'] = 'N/A'
-                # Add other fields if needed
             elif api == "alpha_vantage":
-                # GLOBAL_QUOTE for prices
                 quote_url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={ticker}&apikey={API_KEYS['alpha_vantage']}"
                 quote_resp = requests.get(quote_url).json().get('Global Quote', {})
-                # OVERVIEW for info
                 overview_url = f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={API_KEYS['alpha_vantage']}"
                 overview_resp = requests.get(overview_url).json()
-                # Normalize
-                info['currentPrice'] = float(quote_resp.get('05. price', 'N/A')) if quote_resp.get('05. price') else 'N/A'
-                info['dayHigh'] = float(quote_resp.get('03. high', 'N/A')) if quote_resp.get('03. high') else 'N/A'
-                info['dayLow'] = float(quote_resp.get('04. low', 'N/A')) if quote_resp.get('04. low') else 'N/A'
+                info['currentPrice'] = float(quote_resp.get('05. price', 0)) if quote_resp.get('05. price') else 0
+                info['dayHigh'] = float(quote_resp.get('03. high', 0)) if quote_resp.get('03. high') else 0
+                info['dayLow'] = float(quote_resp.get('04. low', 0)) if quote_resp.get('04. low') else 0
                 info['marketCap'] = overview_resp.get('MarketCapitalization')
                 info['longName'] = overview_resp.get('Name')
                 info['trailingPE'] = overview_resp.get('PERatio')
-                info['preMarketPrice'] = 'N/A'  # No pre/post
+                info['preMarketPrice'] = 'N/A'
                 info['postMarketPrice'] = 'N/A'
+                info['targetMeanPrice'] = overview_resp.get('AnalystTargetPrice', 0)
             elif api == "polygon":
-                # Last quote for price
                 last_url = f"https://api.polygon.io/v2/last/nbbo/{ticker}?apiKey={API_KEYS['polygon']}"
                 last_resp = requests.get(last_url).json().get('results', {})
-                # Ticker details for info
                 ticker_url = f"https://api.polygon.io/v3/reference/tickers/{ticker}?apiKey={API_KEYS['polygon']}"
                 ticker_resp = requests.get(ticker_url).json().get('results', {})
-                # Normalize
-                info['currentPrice'] = last_resp.get('lastQuote', {}).get('P') if 'lastQuote' in last_resp else 'N/A'
-                info['dayHigh'] = 'N/A'  # No daily high/low in last nbbo, need aggregates
-                info['dayLow'] = 'N/A'
+                info['currentPrice'] = last_resp.get('lastQuote', {}).get('P', 0) if 'lastQuote' in last_resp else 0
+                info['dayHigh'] = 0
+                info['dayLow'] = 0
                 info['marketCap'] = ticker_resp.get('market_cap')
                 info['longName'] = ticker_resp.get('name')
                 info['preMarketPrice'] = 'N/A'
@@ -117,6 +112,7 @@ def get_stock_data(ticker):
 @st.cache_data
 def get_historical_data(ticker, period):
     for api in API_ORDER:
+        time.sleep(5)  # Delay to avoid rate limits
         try:
             if api == "yfinance":
                 stock = yf.Ticker(ticker)
@@ -126,7 +122,7 @@ def get_historical_data(ticker, period):
                 from_date = (datetime.now() - timedelta(days=30 if period == "1mo" else 365 if period == "1y" else 90 if period == "3mo" else 182 if period == "6mo" else 5 if period == "5d" else 1)).strftime('%Y-%m-%d')
                 url = f"https://finnhub.io/api/v1/stock/candle?symbol={ticker}&resolution=D&from={int(time.mktime(time.strptime(from_date, '%Y-%m-%d')))}&to={int(time.time())}&token={API_KEYS['finnhub']}"
                 data = requests.get(url).json()
-                if 'c' in data:
+                if 'c' in data and data['c']:
                     hist = pd.DataFrame({
                         'Open': data['o'],
                         'High': data['h'],
@@ -136,13 +132,15 @@ def get_historical_data(ticker, period):
                     }, index=pd.to_datetime([datetime.fromtimestamp(ts) for ts in data['t']]))
                     return hist
             elif api == "alpha_vantage":
-                function = "TIME_SERIES_DAILY" if period in ["1d", "5d", "1mo"] else "TIME_SERIES_WEEKLY" if period == "3mo" else "TIME_SERIES_MONTHLY"
-                url = f"https://www.alphavantage.co/query?function={function}&symbol={ticker}&apikey={API_KEYS['alpha_vantage']}"
-                data = requests.get(url).json().get('Time Series (Daily)', {}) or data.get('Weekly Time Series', {}) or data.get('Monthly Time Series', {})
-                hist = pd.DataFrame.from_dict(data, orient='index').astype(float)
-                hist.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-                hist.index = pd.to_datetime(hist.index)
-                return hist.sort_index()
+                function = "TIME_SERIES_DAILY"
+                url = f"https://www.alphavantage.co/query?function={function}&symbol={ticker}&outputsize=compact&apikey={API_KEYS['alpha_vantage']}"
+                response = requests.get(url)
+                data = response.json().get('Time Series (Daily)', {})
+                if data:
+                    hist = pd.DataFrame.from_dict(data, orient='index').astype(float)
+                    hist.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+                    hist.index = pd.to_datetime(hist.index)
+                    return hist.sort_index()
             elif api == "polygon":
                 multiplier = 1
                 timespan = "day"
@@ -150,14 +148,15 @@ def get_historical_data(ticker, period):
                 to_date = datetime.now().strftime('%Y-%m-%d')
                 url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from_date}/{to_date}?apiKey={API_KEYS['polygon']}"
                 data = requests.get(url).json().get('results', [])
-                hist = pd.DataFrame({
-                    'Open': [d['o'] for d in data],
-                    'High': [d['h'] for d in data],
-                    'Low': [d['l'] for d in data],
-                    'Close': [d['c'] for d in data],
-                    'Volume': [d['v'] for d in data]
-                }, index=pd.to_datetime([datetime.fromtimestamp(d['t']/1000) for d in data]))
-                return hist
+                if data:
+                    hist = pd.DataFrame({
+                        'Open': [d['o'] for d in data],
+                        'High': [d['h'] for d in data],
+                        'Low': [d['l'] for d in data],
+                        'Close': [d['c'] for d in data],
+                        'Volume': [d['v'] for d in data]
+                    }, index=pd.to_datetime([datetime.fromtimestamp(d['t']/1000) for d in data]))
+                    return hist
         except Exception as e:
             st.warning(f"{api} 获取历史数据失败: {e}. 尝试下一个API。")
     st.error("所有API均失败，无法获取历史数据。")
@@ -165,6 +164,7 @@ def get_historical_data(ticker, period):
 
 def get_news_and_sentiment(ticker_symbol):
     for api in API_ORDER:
+        time.sleep(5)  # Delay to avoid rate limits
         try:
             news_list = []
             if api == "finnhub":
@@ -237,7 +237,6 @@ def get_fed_rate():
     try:
         url = "https://www.federalreserve.gov/monetarypolicy/fomc.htm"
         response = requests.get(url)
-        from bs4 import BeautifulSoup
         soup = BeautifulSoup(response.text, 'html.parser')
         rate_text = soup.find(string=lambda text: "Target range for the federal funds rate" in text if text else None)
         if rate_text:
@@ -376,7 +375,7 @@ if page == "首页":
                     time.sleep(1)  # 模拟延迟
                     try:
                         new_info, _ = get_stock_data(ticker)
-                        st.session_state.prev_current = current_price
+                        st.session_state.prev_current = current_price if isinstance(current_price, (int, float)) else 0
                         st.session_state.prev_pre = info.get('preMarketPrice', 0)
                         st.session_state.prev_post = info.get('postMarketPrice', 0)
                         info = new_info
@@ -393,7 +392,7 @@ if page == "首页":
             pre_market_change = info.get('preMarketChange', 0)
             post_market_price = info.get('postMarketPrice', 'N/A')
             post_market_change = info.get('postMarketChange', 0)
-            current_change = current_price - st.session_state.prev_current if isinstance(current_price, (int, float)) else 0
+            current_change = (current_price - st.session_state.prev_current) if isinstance(current_price, (int, float)) else 0
             
             pre_delta_color = "normal" if pre_market_change >= 0 else "inverse"
             post_delta_color = "normal" if post_market_change >= 0 else "inverse"
@@ -453,7 +452,7 @@ elif page == "警报":
         st.success("设置保存！开始监控。")
     
     if 'alert_type' in st.session_state:
-        current_price = info.get('currentPrice', 0)
+        current_price = info.get('currentPrice', 0) if isinstance(info.get('currentPrice', 0), (int, float)) else 0
         if (st.session_state.alert_type == "低于阈值" and current_price < st.session_state.threshold) or (st.session_state.alert_type == "高于阈值" and current_price > st.session_state.threshold):
             st.warning(f"警报触发: {ticker} 价格 {current_price:.2f} {currency} {st.session_state.alert_type} {st.session_state.threshold}!")
         else:
@@ -480,14 +479,14 @@ elif page == "投资建议":
             elif sentiments.count("负面") > sentiments.count("正面"):
                 news_sentiment = "负面"
         
-        current_price = info.get('currentPrice', 0)
+        current_price = info.get('currentPrice', 0) if isinstance(info.get('currentPrice', 0), (int, float)) else 0
         pe = info.get('trailingPE', 0)
         eps = info.get('trailingEps', 0)
         rsi = calculate_rsi(hist['Close'])
         macd, _ = calculate_macd(hist['Close'])
         buy_rating = rec.get('Buy', 0) if not rec.empty else 0
         sell_rating = rec.get('Sell', 0) if not rec.empty else 0
-        target_price = info.get('targetMeanPrice', current_price * 1.1)
+        target_price = info.get('targetMeanPrice', current_price * 1.1 if isinstance(current_price, (int, float)) else 0)
         support = current_price * 0.95
         resistance = current_price * 1.05
         
