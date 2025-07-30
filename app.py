@@ -1022,38 +1022,7 @@ class StockAnalyzer:
                 </div>
                 """,
                 unsafe_allow_html=True
-            )['买入等级'] == buy_level_filter]
-            
-            if min_price > 0:
-                filtered_df = filtered_df[filtered_df['价格'] >= min_price]
-            
-            if max_price < 1000:
-                filtered_df = filtered_df[filtered_df['价格'] <= max_price]
-            
-            # 显示筛选后的数据
-            st.dataframe(
-                filtered_df,
-                use_container_width=True,
-                hide_index=True
             )
-            
-            # 添加统计信息
-            st.subheader("统计信息")
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.metric("总股票数", len(filtered_df))
-            
-            with col2:
-                high_level_count = len(filtered_df[filtered_df['买入等级'] == '高'])
-                st.metric("高等级股票", high_level_count)
-            
-            with col3:
-                avg_price = filtered_df['价格'].mean() if not filtered_df.empty else 0
-                st.metric("平均价格", f"${avg_price:.2f}")
-        
-        else:
-            st.info("点击'更新Top 50'开始筛选最新数据")
     
     def update_top50_stocks(self):
         """更新Top 50股票数据"""
