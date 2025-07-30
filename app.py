@@ -39,12 +39,11 @@ def process_hk_ticker(ticker: str) -> str:
         return f"{ticker}.HK"
     return ticker.upper()  # 其他情况保持原格式（如美股、已带后缀的港股）
 
-# -------------------- 数据获取函数（仅修改港股代码处理） --------------------
+# -------------------- 数据获取函数 --------------------
 @st.cache_data(ttl=CONFIG['cache_timeout'])
 def get_stock_info(ticker: str) -> Tuple[Dict, pd.DataFrame]:
     """获取股票基本信息，适配港股代码（自动补全.HK后缀）"""
     try:
-        # 仅修改此处：使用处理函数而非硬编码判断
         ticker = process_hk_ticker(ticker)
         
         stock = yf.Ticker(ticker)
@@ -72,7 +71,6 @@ def get_stock_info(ticker: str) -> Tuple[Dict, pd.DataFrame]:
 def get_historical_data(ticker: str, period: str) -> pd.DataFrame:
     """获取历史数据，适配港股代码"""
     try:
-        # 仅修改此处：使用处理函数而非硬编码判断
         ticker = process_hk_ticker(ticker)
         
         stock = yf.Ticker(ticker)
@@ -86,7 +84,6 @@ def get_historical_data(ticker: str, period: str) -> pd.DataFrame:
 def get_news(ticker: str) -> List[Dict]:
     """使用Finnhub获取新闻，适配港股代码"""
     try:
-        # 仅修改此处：使用处理函数而非硬编码判断
         ticker = process_hk_ticker(ticker)
         
         end_date = datetime.now().strftime('%Y-%m-%d')
@@ -101,7 +98,6 @@ def get_news(ticker: str) -> List[Dict]:
         
         response = requests.get(CONFIG['news_api']['url'], params=params, timeout=10)
         if response.status_code == 200:
-            # 后续新闻处理逻辑保持不变...
             news_items = response.json()
             news_list = []
             
@@ -137,7 +133,7 @@ def get_news(ticker: str) -> List[Dict]:
         logger.error(f"获取新闻失败 {ticker}: {e}")
         return []
 
-# -------------------- 技术分析函数（保持不变） --------------------
+# -------------------- 技术分析函数 --------------------
 def calculate_rsi(close: pd.Series, period: int = 14) -> float:
     if len(close) < period:
         return 50.0
@@ -171,7 +167,7 @@ def calculate_support_resistance(close: pd.Series) -> Tuple[float, float]:
     recent_data = close.tail(20)
     return recent_data.min(), recent_data.max()
 
-# -------------------- AI分析函数（保持不变） --------------------
+# -------------------- AI分析函数 --------------------
 @st.cache_data(ttl=600)
 def get_sentiment(ticker: str) -> str:
     try:
@@ -216,7 +212,7 @@ def get_investment_advice(ticker: str, rsi: float, macd: float) -> str:
     except:
         return "RSI超卖可关注" if rsi < 30 else "RSI超买需谨慎" if rsi > 70 else "观望为主"
 
-# -------------------- 热门股票函数（保持不变） --------------------
+# -------------------- 热门股票函数 --------------------
 @st.cache_data(ttl=3600)
 def get_trending_stocks() -> pd.DataFrame:
     try:
@@ -257,7 +253,7 @@ def get_trending_stocks() -> pd.DataFrame:
             {'股票代码': '00700.HK', '公司名称': '腾讯控股', '当前价格': 300.0, '涨跌幅': 1.5, '成交量': 56789012, '市场情绪': '正面'}
         ])
 
-# -------------------- 页面渲染函数（保持不变） --------------------
+# -------------------- 页面渲染函数 --------------------
 def render_realtime_page(ticker: str):
     info, _ = get_stock_info(ticker)
     if not info:
@@ -438,22 +434,34 @@ def render_news_page(ticker: str):
             if news['link']:
                 st.link_button("阅读原文", news['link'])
 
-# -------------------- 主应用（保持不变） --------------------
+# -------------------- 主应用（关键修改） --------------------
 def main():
     st.set_page_config(page_title=CONFIG['page_title'], layout='wide')
     st.sidebar.title("🚀 智能股票分析")
     st.sidebar.markdown("---")
     
+    # 使用会话状态跟踪当前选中的股票
+    if 'current_ticker' not in st.session_state:
+        st.session_state.current_ticker = "00700"
+    
+    # 股票代码输入
     ticker = st.sidebar.text_input(
         "输入股票代码", 
-        value="00700",  # 默认港股示例
+        value=st.session_state.current_ticker,
         help="美股: TSLA | 港股: 00700（自动补全.HK）"
     ).upper()
     
+    # 点击输入框时更新当前股票
+    if ticker != st.session_state.current_ticker:
+        st.session_state.current_ticker = ticker
+    
+    # 收藏列表管理
     if 'watchlist' not in st.session_state:
         st.session_state.watchlist = []
     
     st.sidebar.markdown("### ⭐ 关注列表")
+    
+    # 添加到关注按钮
     if st.sidebar.button("➕ 添加到关注"):
         if ticker not in st.session_state.watchlist:
             st.session_state.watchlist.append(ticker)
@@ -461,10 +469,17 @@ def main():
         else:
             st.sidebar.warning("已在关注列表")
     
+    # 显示收藏列表并添加点击事件
     if st.session_state.watchlist:
         for i, wl_ticker in enumerate(st.session_state.watchlist):
             col1, col2 = st.sidebar.columns([3, 1])
-            col1.write(wl_ticker)
+            
+            # 使用按钮实现点击事件
+            if col1.button(wl_ticker, key=f"wl_{i}"):
+                st.session_state.current_ticker = wl_ticker
+                st.experimental_rerun()
+            
+            # 删除按钮
             if col2.button("❌", key=f"del_{i}"):
                 st.session_state.watchlist.remove(wl_ticker)
                 st.rerun()
@@ -477,16 +492,19 @@ def main():
         "🎯 投资建议", "🌟 热门股票", "📰 新闻"
     ])
     
+    # 使用会话状态中的当前股票进行查询
+    active_ticker = st.session_state.current_ticker
+    
     if page == "📊 实时数据":
-        render_realtime_page(ticker)
+        render_realtime_page(active_ticker)
     elif page == "📈 技术分析":
-        render_technical_page(ticker)
+        render_technical_page(active_ticker)
     elif page == "🎯 投资建议":
-        render_advice_page(ticker)
+        render_advice_page(active_ticker)
     elif page == "🌟 热门股票":
         render_trending_page()
     elif page == "📰 新闻":
-        render_news_page(ticker)
+        render_news_page(active_ticker)
 
 if __name__ == "__main__":
     main()
