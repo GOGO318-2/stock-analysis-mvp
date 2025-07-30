@@ -4,5 +4,3 @@ plotly
 numpy
 yfinance
 requests
-beautifulsoup4
-websockets
