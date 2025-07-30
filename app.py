@@ -11,20 +11,20 @@ from typing import Dict, List, Tuple, Optional
 
 warnings.filterwarnings('ignore')
 
-# 配置信息（更新API配置）
+# 配置信息（保留原有API，更新新闻API）
 CONFIG = {
     'page_title': '智能股票分析平台',
     'layout': 'wide',
     'api_keys': {
-        "finnhub": "d1p1qv9r01qi9vk2517gd1p1qv9r01qi9vk25180",  # 原有API
-        "alpha_vantage": "Z45S0SLJGM378PIO",  # 原有API
-        "polygon": "2CDgF277xEhkhKndj5yFMVONxBGFFShg",  # 新增热门股票API
-        "xai": "xai-N36diIqx3wkZz6eBGQfjadqdNe3H84FYfPsXXauU02ag1s5k45zida3aYocHu5Bi9AhT6jO5kFpjW7CD"  # 原有AI API
+        "finnhub": "d1p1qv9r01qi9vk2517gd1p1qv9r01qi9vk25180",  # 您提供的Finnhub API Key
+        "alpha_vantage": "Z45S0SLJGM378PIO",
+        "polygon": "2CDgF277xEhkhKndj5yFMVONxBGFFShg",
+        "xai": "xai-N36diIqx3wkZz6eBGQfjadqdNe3H84FYfPsXXauU02ag1s5k45zida3aYocHu5Bi9AhT6jO5kFpjW7CD"
     },
     'cache_timeout': 300,  # 5分钟缓存
     'news_api': {
-        'url': 'https://newsapi.org/v2/everything',
-        'key': 'b5c3e5a5e6f34f34b4b3b6e4e6f3e5a'  # 新增免费新闻API（需自行申请）
+        'url': 'https://finnhub.io/api/v1/company-news',  # 使用Finnhub新闻API
+        'key': "d1p1qv9r01qi9vk2517gd1p1qv9r01qi9vk25180"  # 您提供的Finnhub API Key
     }
 }
 
@@ -35,11 +35,11 @@ logger = logging.getLogger(__name__)
 # -------------------- 数据获取函数 --------------------
 @st.cache_data(ttl=CONFIG['cache_timeout'])
 def get_stock_info(ticker: str) -> Tuple[Dict, pd.DataFrame]:
-    """获取股票基本信息和推荐（修复港股兼容问题）"""
+    """获取股票基本信息和推荐"""
     try:
         # 处理港股代码格式
         if '.' in ticker and not ticker.endswith('.HK'):
-            ticker = ticker.replace('.', '-')  # 某些API需要这种格式
+            ticker = ticker.replace('.', '-')
         
         stock = yf.Ticker(ticker)
         info = stock.info
@@ -54,7 +54,6 @@ def get_stock_info(ticker: str) -> Tuple[Dict, pd.DataFrame]:
         return info, recommendations
     except Exception as e:
         logger.error(f"获取股票信息失败 {ticker}: {e}")
-        # 增加重试机制
         try:
             # 尝试使用finnhub API作为备选
             url = f"https://finnhub.io/api/v1/stock/profile2?symbol={ticker}"
@@ -66,7 +65,7 @@ def get_stock_info(ticker: str) -> Tuple[Dict, pd.DataFrame]:
 
 @st.cache_data(ttl=CONFIG['cache_timeout'])
 def get_historical_data(ticker: str, period: str) -> pd.DataFrame:
-    """获取历史数据（修复港股兼容问题）"""
+    """获取历史数据"""
     try:
         # 处理港股代码格式
         if '.' in ticker and not ticker.endswith('.HK'):
@@ -81,64 +80,61 @@ def get_historical_data(ticker: str, period: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=CONFIG['cache_timeout'])
 def get_news(ticker: str) -> List[Dict]:
-    """获取股票新闻（改用NewsAPI作为备选）"""
+    """使用Finnhub API获取股票新闻（更新）"""
     try:
-        # 尝试使用yfinance获取新闻
-        stock = yf.Ticker(ticker)
-        news = stock.news[:5]
+        # 计算日期范围（过去30天）
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
         
-        news_list = []
-        positive_keywords = ['positive', 'bullish', 'surge', 'gain', 'up', 'buy', 'growth', 'strong']
-        negative_keywords = ['negative', 'bearish', 'drop', 'loss', 'down', 'sell', 'decline', 'weak']
+        # 构建API请求
+        params = {
+            'symbol': ticker,
+            'from': start_date,
+            'to': end_date,
+            'token': CONFIG['news_api']['key']
+        }
         
-        for item in news:
-            title = item.get('title', '')
-            title_lower = title.lower()
-            
-            sentiment = "正面" if any(kw in title_lower for kw in positive_keywords) else \
-                        "负面" if any(kw in title_lower for kw in negative_keywords) else "中性"
-            
-            publish_time = item.get('providerPublishTime', 0)
-            try:
-                publish_date = datetime.fromtimestamp(publish_time).strftime('%Y-%m-%d %H:%M')
-            except:
-                publish_date = "未知时间"
-            
-            news_list.append({
-                'title': title,
-                'link': item.get('link', ''),
-                'publish_date': publish_date,
-                'sentiment': sentiment,
-                'source': item.get('publisher', {}).get('name', 'Unknown')
-            })
+        response = requests.get(CONFIG['news_api']['url'], params=params, timeout=10)
         
-        return news_list
+        if response.status_code == 200:
+            news_items = response.json()
+            news_list = []
+            
+            # 情感关键词列表
+            positive_keywords = ['positive', 'bullish', 'surge', 'gain', 'up', 'buy', 'growth', 'strong']
+            negative_keywords = ['negative', 'bearish', 'drop', 'loss', 'down', 'sell', 'decline', 'weak']
+            
+            for item in news_items:
+                title = item.get('headline', '')
+                title_lower = title.lower()
+                
+                # 简单情感分析
+                sentiment = "正面" if any(kw in title_lower for kw in positive_keywords) else \
+                           "负面" if any(kw in title_lower for kw in negative_keywords) else "中性"
+                
+                # 格式化日期
+                try:
+                    timestamp = item.get('datetime', 0)
+                    publish_date = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M')
+                except:
+                    publish_date = "未知时间"
+                
+                news_list.append({
+                    'title': title,
+                    'link': item.get('url', ''),
+                    'publish_date': publish_date,
+                    'sentiment': sentiment,
+                    'source': item.get('source', 'Unknown'),
+                    'summary': item.get('summary', '')
+                })
+            
+            return news_list
+        else:
+            logger.error(f"Finnhub新闻API请求失败，状态码: {response.status_code}")
+            return []
     except Exception as e:
         logger.error(f"获取新闻失败 {ticker}: {e}")
-        # 备选方案：使用NewsAPI
-        try:
-            params = {
-                'q': ticker,
-                'apiKey': CONFIG['news_api']['key'],
-                'language': 'en',
-                'sortBy': 'publishedAt',
-                'pageSize': 5
-            }
-            response = requests.get(CONFIG['news_api']['url'], params=params, timeout=10)
-            if response.status_code == 200:
-                articles = response.json().get('articles', [])
-                news_list = []
-                for art in articles:
-                    news_list.append({
-                        'title': art.get('title', ''),
-                        'link': art.get('url', ''),
-                        'publish_date': art.get('publishedAt', '')[:16].replace('T', ' '),
-                        'source': art.get('source', {}).get('name', 'Unknown'),
-                        'sentiment': '中性'  # 简化情感分析
-                    })
-                return news_list
-        except:
-            return []
+        return []
 
 # -------------------- 技术分析函数 --------------------
 def calculate_rsi(close: pd.Series, period: int = 14) -> float:
@@ -195,10 +191,10 @@ def calculate_support_resistance(close: pd.Series) -> Tuple[float, float]:
     
     return support, resistance
 
-# -------------------- AI分析函数（增强容错） --------------------
+# -------------------- AI分析函数 --------------------
 @st.cache_data(ttl=600)
 def get_sentiment(ticker: str) -> str:
-    """获取情感分析（增强容错）"""
+    """获取情感分析"""
     try:
         url = "https://api.x.ai/v1/chat/completions"
         headers = {
@@ -222,24 +218,21 @@ def get_sentiment(ticker: str) -> str:
             return "正面" if any(word in result for word in ['正面', 'positive', '看涨', '乐观']) else \
                    "负面" if any(word in result for word in ['负面', 'negative', '看跌', '悲观']) else "中性"
         else:
-            # 备选方案：使用简单的价格变动判断
-            hist = get_historical_data(ticker, "1mo")
-            if len(hist) > 5:
-                recent_change = hist['Close'].pct_change().dropna().mean()
-                return "正面" if recent_change > 0.01 else "负面" if recent_change < -0.01 else "中性"
+            # 备选方案：使用Finnhub情绪评分
+            url = f"https://finnhub.io/api/v1/news-sentiment?symbol={ticker}&token={CONFIG['api_keys']['finnhub']}"
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                company_sentiment = data.get('companyNewsScore', 0.5)
+                return "正面" if company_sentiment > 0.6 else "负面" if company_sentiment < 0.4 else "中性"
             return "中性（API错误）"
     except Exception as e:
         logger.error(f"AI情感分析失败 {ticker}: {e}")
-        # 备选方案：使用简单的价格变动判断
-        hist = get_historical_data(ticker, "1mo")
-        if len(hist) > 5:
-            recent_change = hist['Close'].pct_change().dropna().mean()
-            return "正面" if recent_change > 0.01 else "负面" if recent_change < -0.01 else "中性"
         return "中性（分析失败）"
 
 @st.cache_data(ttl=600)
 def get_investment_advice(ticker: str, rsi: float, macd: float) -> str:
-    """获取投资建议（增强容错）"""
+    """获取投资建议"""
     try:
         url = "https://api.x.ai/v1/chat/completions"
         headers = {
@@ -272,39 +265,26 @@ def get_investment_advice(ticker: str, rsi: float, macd: float) -> str:
             return "; ".join(advice) if advice else "暂无明确信号，建议观望"
     except Exception as e:
         logger.error(f"AI投资建议失败 {ticker}: {e}")
-        # 备选方案：基于RSI和MACD生成简单建议
-        advice = []
-        if rsi < 30: advice.append("RSI超卖，短期可能反弹")
-        elif rsi > 70: advice.append("RSI超买，短期可能回调")
-        
-        if macd > 0: advice.append("MACD为正，趋势向上")
-        else: advice.append("MACD为负，趋势向下")
-        
-        return "; ".join(advice) if advice else "暂无明确信号，建议观望"
+        return "暂无明确信号，建议观望"
 
-# -------------------- 热门股票动态推荐（使用Polygon API） --------------------
+# -------------------- 热门股票动态推荐 --------------------
 @st.cache_data(ttl=3600)  # 每小时更新
 def get_trending_stocks() -> pd.DataFrame:
-    """动态获取热门股票（使用Polygon API）"""
+    """获取热门股票"""
     try:
-        # 获取美股热门股票
-        url = "https://api.polygon.io/v2/reference/tickers"
+        # 使用Finnhub API获取热门股票
+        url = "https://finnhub.io/api/v1/stock/most-active"
         params = {
-            "market": "stocks",
-            "active": "true",
-            "sort": "volume",
-            "order": "desc",
-            "limit": 20,  # 获取前20只交易量最大的股票
-            "apiKey": CONFIG['api_keys']['polygon']
+            "token": CONFIG['api_keys']['finnhub']
         }
         
         response = requests.get(url, params=params, timeout=10)
         if response.status_code == 200:
-            data = response.json().get('tickers', [])
+            data = response.json().get('mostActiveStock', [])
             trending_data = []
             
             for item in data:
-                ticker = item.get('ticker', '')
+                ticker = item.get('symbol', '')
                 if not ticker:
                     continue
                 
@@ -319,7 +299,8 @@ def get_trending_stocks() -> pd.DataFrame:
                     '当前价格': info.get('currentPrice', 0),
                     '涨跌幅': info.get('regularMarketChangePercent', 0),
                     '成交量': info.get('volume', 0),
-                    '市值': info.get('marketCap', 0)
+                    '市值': info.get('marketCap', 0),
+                    '市场情绪': get_sentiment(ticker)
                 })
             
             if trending_data:
@@ -327,16 +308,16 @@ def get_trending_stocks() -> pd.DataFrame:
         
         # 如果API失败，使用备用列表
         return pd.DataFrame([
-            {'股票代码': 'TSLA', '公司名称': '特斯拉', '当前价格': 240.5, '涨跌幅': 2.3, '成交量': 12345678, '市值': 750000000000},
-            {'股票代码': 'AAPL', '公司名称': '苹果', '当前价格': 180.2, '涨跌幅': 0.8, '成交量': 23456789, '市值': 2800000000000},
+            {'股票代码': 'TSLA', '公司名称': '特斯拉', '当前价格': 240.5, '涨跌幅': 2.3, '成交量': 12345678, '市值': 750000000000, '市场情绪': '正面'},
+            {'股票代码': 'AAPL', '公司名称': '苹果', '当前价格': 180.2, '涨跌幅': 0.8, '成交量': 23456789, '市值': 2800000000000, '市场情绪': '中性'},
             # 其他备用股票...
         ])
     except Exception as e:
         logger.error(f"获取热门股票失败: {e}")
         # 如果API失败，使用备用列表
         return pd.DataFrame([
-            {'股票代码': 'TSLA', '公司名称': '特斯拉', '当前价格': 240.5, '涨跌幅': 2.3, '成交量': 12345678, '市值': 750000000000},
-            {'股票代码': 'AAPL', '公司名称': '苹果', '当前价格': 180.2, '涨跌幅': 0.8, '成交量': 23456789, '市值': 2800000000000},
+            {'股票代码': 'TSLA', '公司名称': '特斯拉', '当前价格': 240.5, '涨跌幅': 2.3, '成交量': 12345678, '市值': 750000000000, '市场情绪': '正面'},
+            {'股票代码': 'AAPL', '公司名称': '苹果', '当前价格': 180.2, '涨跌幅': 0.8, '成交量': 23456789, '市值': 2800000000000, '市场情绪': '中性'},
             # 其他备用股票...
         ])
 
@@ -694,7 +675,7 @@ def render_trending_page():
         st.info("点击'更新数据'获取最新热门股票信息")
 
 def render_news_page(ticker: str):
-    """渲染市场新闻页面"""
+    """渲染市场新闻页面（使用Finnhub API）"""
     st.title(f"📰 {ticker} 市场新闻")
     
     with st.spinner("获取最新新闻..."):
@@ -733,12 +714,16 @@ def render_news_page(ticker: str):
                 if news['link']:
                     st.link_button("阅读原文", news['link'])
             
+            if news.get('summary'):
+                st.write(f"**摘要:** {news['summary']}")
+            
             st.markdown("---")
 
 # -------------------- 主应用 --------------------
 def main():
     """主应用函数"""
     # 设置侧边栏
+    st.set_page_config(page_title=CONFIG['page_title'], layout='wide')
     st.sidebar.title("🚀 智能股票分析")
     st.sidebar.markdown("---")
     
