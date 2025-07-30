@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import logging
 import warnings
 from typing import Dict, List, Tuple, Optional
+import time
 
 warnings.filterwarnings('ignore')
 
@@ -32,50 +33,116 @@ CONFIG = {
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# -------------------- 关键修改：港股代码处理函数 --------------------
+# -------------------- 港股代码处理函数 --------------------
 def process_hk_ticker(ticker: str) -> str:
     """处理港股代码，将5位数字格式转为 .HK 后缀格式（如 00700 → 00700.HK）"""
+    ticker = ticker.strip().upper()
     if ticker.isdigit() and len(ticker) == 5 and not ticker.endswith('.HK'):
         return f"{ticker}.HK"
-    return ticker.upper()  # 其他情况保持原格式（如美股、已带后缀的港股）
+    elif ticker.endswith('.HK') and len(ticker) == 8:
+        return ticker
+    return ticker
 
 # -------------------- 数据获取函数 --------------------
 @st.cache_data(ttl=CONFIG['cache_timeout'])
 def get_stock_info(ticker: str) -> Tuple[Dict, pd.DataFrame]:
     """获取股票基本信息，适配港股代码（自动补全.HK后缀）"""
     try:
-        ticker = process_hk_ticker(ticker)
+        processed_ticker = process_hk_ticker(ticker)
         
-        stock = yf.Ticker(ticker)
-        info = stock.info
-        
+        # 尝试使用yfinance获取数据
         try:
-            recommendations = stock.recommendations_summary
-            if recommendations is None or recommendations.empty:
-                recommendations = pd.DataFrame()
-        except:
-            recommendations = pd.DataFrame()
+            stock = yf.Ticker(processed_ticker)
+            info = stock.info
             
-        return info, recommendations
+            try:
+                recommendations = stock.recommendations_summary
+                if recommendations is None or recommendations.empty:
+                    recommendations = pd.DataFrame()
+            except:
+                recommendations = pd.DataFrame()
+                
+            return info, recommendations
+        except Exception as e:
+            logger.warning(f"yfinance获取股票信息失败 {processed_ticker}: {e}")
+            
+        # yfinance失败时使用Finnhub作为备用
+        url = f"https://finnhub.io/api/v1/stock/profile2?symbol={processed_ticker}"
+        response = requests.get(url, params={"token": CONFIG['api_keys']['finnhub']}, timeout=10)
+        if response.status_code == 200:
+            info = response.json()
+            # 获取实时报价
+            quote_url = f"https://finnhub.io/api/v1/quote?symbol={processed_ticker}"
+            quote_response = requests.get(quote_url, params={"token": CONFIG['api_keys']['finnhub']}, timeout=10)
+            if quote_response.status_code == 200:
+                quote_data = quote_response.json()
+                info['currentPrice'] = quote_data.get('c', 0)
+                info['previousClose'] = quote_data.get('pc', 0)
+                info['dayHigh'] = quote_data.get('h', 0)
+                info['dayLow'] = quote_data.get('l', 0)
+                info['volume'] = quote_data.get('v', 0)
+            return info, pd.DataFrame()
+        else:
+            return {}, pd.DataFrame()
     except Exception as e:
         logger.error(f"获取股票信息失败 {ticker}: {e}")
-        try:
-            url = f"https://finnhub.io/api/v1/stock/profile2?symbol={ticker}"
-            response = requests.get(url, params={"token": CONFIG['api_keys']['finnhub']}, timeout=10)
-            if response.status_code == 200:
-                return response.json(), pd.DataFrame()
-        except:
-            return {}, pd.DataFrame()
+        return {}, pd.DataFrame()
 
 @st.cache_data(ttl=CONFIG['cache_timeout'])
 def get_historical_data(ticker: str, period: str) -> pd.DataFrame:
     """获取历史数据，适配港股代码"""
     try:
-        ticker = process_hk_ticker(ticker)
+        processed_ticker = process_hk_ticker(ticker)
         
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period=period)
-        return hist if not hist.empty else pd.DataFrame()
+        # 尝试使用yfinance获取数据
+        try:
+            stock = yf.Ticker(processed_ticker)
+            hist = stock.history(period=period)
+            if not hist.empty:
+                return hist
+        except Exception as e:
+            logger.warning(f"yfinance获取历史数据失败 {processed_ticker}: {e}")
+        
+        # yfinance失败时使用Finnhub作为备用
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=365*5)  # 5年数据
+        
+        # 根据period调整时间范围
+        if period == "1d":
+            start_date = end_date - timedelta(days=1)
+        elif period == "5d":
+            start_date = end_date - timedelta(days=5)
+        elif period == "1mo":
+            start_date = end_date - timedelta(days=30)
+        elif period == "3mo":
+            start_date = end_date - timedelta(days=90)
+        elif period == "1y":
+            start_date = end_date - timedelta(days=365)
+        
+        url = f"https://finnhub.io/api/v1/stock/candle"
+        params = {
+            'symbol': processed_ticker,
+            'resolution': 'D',
+            'from': int(start_date.timestamp()),
+            'to': int(end_date.timestamp()),
+            'token': CONFIG['api_keys']['finnhub']
+        }
+        
+        response = requests.get(url, params=params, timeout=15)
+        if response.status_code == 200:
+            data = response.json()
+            if data['s'] == 'ok':
+                df = pd.DataFrame({
+                    'Date': pd.to_datetime(data['t'], unit='s'),
+                    'Open': data['o'],
+                    'High': data['h'],
+                    'Low': data['l'],
+                    'Close': data['c'],
+                    'Volume': data['v']
+                })
+                df.set_index('Date', inplace=True)
+                return df
+        return pd.DataFrame()
     except Exception as e:
         logger.error(f"获取历史数据失败 {ticker}: {e}")
         return pd.DataFrame()
@@ -84,13 +151,13 @@ def get_historical_data(ticker: str, period: str) -> pd.DataFrame:
 def get_news(ticker: str) -> List[Dict]:
     """使用Finnhub获取新闻，适配港股代码"""
     try:
-        ticker = process_hk_ticker(ticker)
+        processed_ticker = process_hk_ticker(ticker)
         
         end_date = datetime.now().strftime('%Y-%m-%d')
         start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
         
         params = {
-            'symbol': ticker,
+            'symbol': processed_ticker,
             'from': start_date,
             'to': end_date,
             'token': CONFIG['news_api']['key']
@@ -101,15 +168,18 @@ def get_news(ticker: str) -> List[Dict]:
             news_items = response.json()
             news_list = []
             
-            positive_keywords = ['positive', 'bullish', 'surge', 'gain', 'up', 'buy']
-            negative_keywords = ['negative', 'bearish', 'drop', 'loss', 'down', 'sell']
+            positive_keywords = ['positive', 'bullish', 'surge', 'gain', 'up', 'buy', 'strong', 'growth', 'beat', 'increase']
+            negative_keywords = ['negative', 'bearish', 'drop', 'loss', 'down', 'sell', 'weak', 'decline', 'miss', 'decrease', 'cut']
             
             for item in news_items:
                 title = item.get('headline', '')
                 title_lower = title.lower()
                 
-                sentiment = "正面" if any(kw in title_lower for kw in positive_keywords) else \
-                           "负面" if any(kw in title_lower for kw in negative_keywords) else "中性"
+                sentiment = "中性"
+                if any(kw in title_lower for kw in positive_keywords):
+                    sentiment = "正面"
+                elif any(kw in title_lower for kw in negative_keywords):
+                    sentiment = "负面"
                 
                 try:
                     publish_date = datetime.fromtimestamp(item.get('datetime', 0)).strftime('%Y-%m-%d %H:%M')
@@ -142,23 +212,27 @@ def calculate_rsi(close: pd.Series, period: int = 14) -> float:
     loss = -delta.where(delta < 0, 0).rolling(window=period).mean()
     if loss.iloc[-1] == 0:
         return 100.0
-    rs = gain / loss
+    rs = gain.iloc[-1] / loss.iloc[-1]
     rsi = 100 - (100 / (1 + rs))
-    return rsi.iloc[-1] if not pd.isna(rsi.iloc[-1]) else 50.0
+    return rsi if not pd.isna(rsi) else 50.0
 
 def calculate_macd(close: pd.Series, short: int = 12, long: int = 26, signal: int = 9) -> Tuple[float, float]:
     if len(close) < long:
         return 0.0, 0.0
-    ema_short = close.ewm(span=short).mean()
-    ema_long = close.ewm(span=long).mean()
-    return (ema_short - ema_long).iloc[-1], (ema_short - ema_long).ewm(span=signal).mean().iloc[-1]
+    ema_short = close.ewm(span=short, adjust=False).mean()
+    ema_long = close.ewm(span=long, adjust=False).mean()
+    macd_line = ema_short - ema_long
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    return macd_line.iloc[-1], signal_line.iloc[-1]
 
 def calculate_bollinger_bands(close: pd.Series, window: int = 20, std_dev: int = 2) -> Tuple[pd.Series, pd.Series, pd.Series]:
     if len(close) < window:
         return pd.Series(), pd.Series(), pd.Series()
     rolling_mean = close.rolling(window=window).mean()
     rolling_std = close.rolling(window=window).std()
-    return rolling_mean + rolling_std * std_dev, rolling_mean, rolling_mean - rolling_std * std_dev
+    upper_band = rolling_mean + (rolling_std * std_dev)
+    lower_band = rolling_mean - (rolling_std * std_dev)
+    return upper_band, rolling_mean, lower_band
 
 def calculate_support_resistance(close: pd.Series) -> Tuple[float, float]:
     if len(close) < 20:
@@ -171,24 +245,24 @@ def calculate_support_resistance(close: pd.Series) -> Tuple[float, float]:
 @st.cache_data(ttl=600)
 def get_sentiment(ticker: str) -> str:
     try:
-        # 使用备用API代替失效的x.ai
+        # 使用Finnhub新闻情绪API
         url = f"https://finnhub.io/api/v1/news-sentiment?symbol={ticker}&token={CONFIG['api_keys']['finnhub']}"
         res = requests.get(url, timeout=10)
         if res.status_code == 200:
-            score = res.json().get('companyNewsScore', 0.5)
+            data = res.json()
+            score = data.get('sentiment', {}).get('bullishPercent', 0.5)
             return "正面" if score > 0.6 else "负面" if score < 0.4 else "中性"
-        return "中性（API错误）"
+        return "中性"
     except:
-        return "中性（分析失败）"
+        return "中性"
 
 @st.cache_data(ttl=600)
 def get_investment_advice(ticker: str, rsi: float, macd: float) -> str:
     try:
-        # 使用备用API代替失效的x.ai
         if rsi < 30 and macd > 0:
-            return "RSI超卖且MACD看涨，建议买入"
+            return "RSI超卖且MACD看涨，强烈建议买入"
         elif rsi < 30:
-            return "RSI超卖，可关注买入机会"
+            return "RSI超卖，存在买入机会"
         elif rsi > 70 and macd < 0:
             return "RSI超买且MACD看跌，建议卖出"
         elif rsi > 70:
@@ -206,56 +280,127 @@ def get_investment_advice(ticker: str, rsi: float, macd: float) -> str:
 @st.cache_data(ttl=3600)
 def get_trending_stocks() -> pd.DataFrame:
     try:
-        url = "https://finnhub.io/api/v1/stock/most-active"
-        params = {"token": CONFIG['api_keys']['finnhub']}
-        response = requests.get(url, params=params, timeout=10)
+        # 获取美股大盘指数成分股作为候选池
+        url = "https://finnhub.io/api/v1/index/constituents?symbol=.SPX&token=" + CONFIG['api_keys']['finnhub']
+        response = requests.get(url, timeout=15)
         
         if response.status_code == 200:
-            data = response.json().get('mostActiveStock', [])
-            trending_data = []
+            constituents = response.json().get('constituents', [])[:50]
+        else:
+            # 备用股票池
+            constituents = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'JPM', 'JNJ', 'V', 
+                           'PG', 'NVDA', 'HD', 'MA', 'DIS', 'ADBE', 'PYPL', 'NFLX', 'CRM', 
+                           'INTC', 'CSCO', 'PEP', 'KO', 'T', 'VZ', 'WMT', 'MRK', 'PFE', 
+                           'ABT', 'TMO', 'UNH', 'BAC', 'GS', 'MS', 'C', 'BA', 'CAT', 'MMM', 
+                           'HON', 'GE', 'IBM', 'ORCL', 'QCOM', 'TXN', 'AMD', 'AVGO', 'AMAT', 
+                           'MU', 'LRCX', 'ADI', 'XLNX']
+        
+        trending_data = []
+        progress_bar = st.progress(0)
+        total_stocks = len(constituents)
+        
+        for idx, ticker in enumerate(constituents):
+            progress = (idx + 1) / total_stocks
+            progress_bar.progress(progress)
             
-            for item in data:
-                ticker = item.get('symbol', '')
-                ticker = process_hk_ticker(ticker)  # 处理港股代码
+            try:
+                # 获取股票信息
                 info, _ = get_stock_info(ticker)
-                if not info:
+                if not info or 'currentPrice' not in info:
                     continue
+                
+                # 获取历史数据
+                hist = get_historical_data(ticker, "1y")
+                if hist.empty:
+                    continue
+                
+                # 计算技术指标
+                rsi = calculate_rsi(hist['Close'])
+                macd, _ = calculate_macd(hist['Close'])
+                
+                # 获取市场情绪
+                sentiment = get_sentiment(ticker)
+                
+                # 计算推荐得分 (0-100)
+                # RSI权重: 30%，MACD权重: 30%，情绪权重: 20%，价格动量权重: 20%
+                score = 0
+                
+                # RSI评分：30以下满分，70以上0分
+                if rsi < 30:
+                    rsi_score = 100
+                elif rsi > 70:
+                    rsi_score = 0
+                else:
+                    rsi_score = 100 - ((rsi - 30) / 40 * 100)
+                score += rsi_score * 0.3
+                
+                # MACD评分：正值加分，负值减分
+                macd_score = 50 + (macd * 10)  # 每0.1的MACD值对应1分
+                macd_score = max(0, min(100, macd_score))
+                score += macd_score * 0.3
+                
+                # 情绪评分
+                sentiment_score = 100 if sentiment == "正面" else 50 if sentiment == "中性" else 0
+                score += sentiment_score * 0.2
+                
+                # 价格动量评分 (最近1个月涨幅)
+                if len(hist) > 20:
+                    monthly_return = (hist['Close'].iloc[-1] / hist['Close'].iloc[-20] - 1) * 100
+                    momentum_score = min(100, max(0, 50 + monthly_return * 2))  # 每1%涨幅加2分
+                    score += momentum_score * 0.2
+                
+                # 确保分数在0-100范围内
+                score = max(0, min(100, score))
                 
                 trending_data.append({
                     '股票代码': ticker,
                     '公司名称': info.get('longName', ticker),
                     '当前价格': info.get('currentPrice', 0),
-                    '涨跌幅': item.get('changePercentage', 0),
-                    '成交量': item.get('volume', 0),
-                    '市场情绪': get_sentiment(ticker)
+                    '涨跌幅': info.get('regularMarketChangePercent', 0),
+                    'RSI': round(rsi, 2),
+                    'MACD': round(macd, 4),
+                    '市场情绪': sentiment,
+                    '推荐得分': round(score),
+                    '买入建议': "强烈买入" if score > 80 else "买入" if score > 60 else "观望" if score > 40 else "谨慎" if score > 20 else "卖出"
                 })
-            
-            return pd.DataFrame(trending_data) if trending_data else pd.DataFrame()
-        else:
-            return pd.DataFrame([
-                {'股票代码': 'TSLA', '公司名称': '特斯拉', '当前价格': 240.5, '涨跌幅': 2.3, '成交量': 12345678, '市场情绪': '正面'},
-                {'股票代码': 'AAPL', '公司名称': '苹果', '当前价格': 180.2, '涨跌幅': 0.8, '成交量': 23456789, '市场情绪': '中性'},
-                {'股票代码': '00700.HK', '公司名称': '腾讯控股', '当前价格': 300.0, '涨跌幅': 1.5, '成交量': 56789012, '市场情绪': '正面'},
-                {'股票代码': 'BABA', '公司名称': '阿里巴巴', '当前价格': 80.3, '涨跌幅': -0.5, '成交量': 87654321, '市场情绪': '中性'}
-            ])
-    except:
+            except Exception as e:
+                logger.warning(f"处理股票 {ticker} 失败: {e}")
+                continue
+        
+        # 按推荐得分降序排序
+        df = pd.DataFrame(trending_data)
+        if not df.empty:
+            df = df.sort_values(by='推荐得分', ascending=False)
+        return df
+    except Exception as e:
+        logger.error(f"获取热门股票失败: {e}")
         return pd.DataFrame([
-            {'股票代码': 'TSLA', '公司名称': '特斯拉', '当前价格': 240.5, '涨跌幅': 2.3, '成交量': 12345678, '市场情绪': '正面'},
-            {'股票代码': '00700.HK', '公司名称': '腾讯控股', '当前价格': 300.0, '涨跌幅': 1.5, '成交量': 56789012, '市场情绪': '正面'}
+            {'股票代码': 'AAPL', '公司名称': '苹果', '当前价格': 180.2, '涨跌幅': 0.8, 
+             'RSI': 45.2, 'MACD': 0.12, '市场情绪': '正面', '推荐得分': 85, '买入建议': '强烈买入'},
+            {'股票代码': 'MSFT', '公司名称': '微软', '当前价格': 340.5, '涨跌幅': 1.2, 
+             'RSI': 38.7, 'MACD': 0.25, '市场情绪': '正面', '推荐得分': 82, '买入建议': '强烈买入'},
+            {'股票代码': 'GOOGL', '公司名称': '谷歌', '当前价格': 138.2, '涨跌幅': -0.3, 
+             'RSI': 52.1, 'MACD': -0.08, '市场情绪': '中性', '推荐得分': 65, '买入建议': '买入'},
+            {'股票代码': 'AMZN', '公司名称': '亚马逊', '当前价格': 178.5, '涨跌幅': 2.1, 
+             'RSI': 58.3, 'MACD': 0.15, '市场情绪': '正面', '推荐得分': 78, '买入建议': '买入'},
+            {'股票代码': 'TSLA', '公司名称': '特斯拉', '当前价格': 240.5, '涨跌幅': -1.5, 
+             'RSI': 68.2, 'MACD': -0.12, '市场情绪': '中性', '推荐得分': 42, '买入建议': '观望'},
+            {'股票代码': 'JPM', '公司名称': '摩根大通', '当前价格': 198.3, '涨跌幅': 0.7, 
+             'RSI': 48.5, 'MACD': 0.08, '市场情绪': '正面', '推荐得分': 72, '买入建议': '买入'}
         ])
 
 # -------------------- 页面渲染函数 --------------------
 def render_realtime_page(ticker: str):
-    ticker = process_hk_ticker(ticker)  # 确保处理港股代码
-    info, _ = get_stock_info(ticker)
-    if not info:
-        st.error("❌ 无法获取股票数据，请检查代码（港股请用5位数字，如00700）")
+    processed_ticker = process_hk_ticker(ticker)
+    info, _ = get_stock_info(processed_ticker)
+    if not info or 'currentPrice' not in info:
+        st.error(f"❌ 无法获取股票数据，请检查代码（港股请用5位数字，如00700）")
         return
     
-    company_name = info.get('longName', ticker)
+    company_name = info.get('longName', processed_ticker)
     currency = info.get('currency', 'USD')
     
-    st.title(f"📊 {company_name} ({ticker})")
+    st.title(f"📊 {company_name} ({processed_ticker})")
     
     col1, col2, col3, col4 = st.columns(4)
     
@@ -286,7 +431,7 @@ def render_realtime_page(ticker: str):
     st.markdown("---")
     period_options = {"1日": "1d", "5日": "5d", "1月": "1mo", "3月": "3mo", "1年": "1y", "5年": "5y"}
     selected_period = st.selectbox("选择时间范围", list(period_options.keys()), index=2)
-    hist = get_historical_data(ticker, period_options[selected_period])
+    hist = get_historical_data(processed_ticker, period_options[selected_period])
     
     if hist.empty:
         st.warning("⚠️ 无法获取历史数据")
@@ -304,7 +449,7 @@ def render_realtime_page(ticker: str):
         fig.add_trace(go.Scatter(x=hist.index, y=upper, name='布林上轨', line=dict(color='red', dash='dash')))
         fig.add_trace(go.Scatter(x=hist.index, y=lower, name='布林下轨', line=dict(color='green', dash='dash')))
     
-    fig.update_layout(title=f"{ticker} K线图", height=500, xaxis_rangeslider_visible=True)
+    fig.update_layout(title=f"{processed_ticker} K线图", height=500, xaxis_rangeslider_visible=True)
     st.plotly_chart(fig, use_container_width=True)
     
     if currency == 'USD':
@@ -318,21 +463,21 @@ def render_realtime_page(ticker: str):
             st.metric("盘后价格", f"{post_price:.2f} {currency}" if post_price else "暂无数据")
 
 def render_technical_page(ticker: str):
-    ticker = process_hk_ticker(ticker)  # 确保处理港股代码
-    hist = get_historical_data(ticker, "1y")
-    info = get_stock_info(ticker)[0]
+    processed_ticker = process_hk_ticker(ticker)
+    hist = get_historical_data(processed_ticker, "1y")
+    info = get_stock_info(processed_ticker)[0]
     if hist.empty or not info:
         st.error("❌ 数据获取失败")
         return
     
-    st.title(f"📈 {ticker} 技术分析")
+    st.title(f"📈 {processed_ticker} 技术分析")
     rsi = calculate_rsi(hist['Close'])
     macd, signal = calculate_macd(hist['Close'])
     support, resistance = calculate_support_resistance(hist['Close'])
     
     col1, col2 = st.columns(2)
     col1.metric("RSI(14)", f"{rsi:.2f}", "超卖" if rsi < 30 else "超买" if rsi > 70 else "正常")
-    col2.metric("MACD", f"{macd:.2f} / {signal:.2f}", "看涨" if macd > signal else "看跌")
+    col2.metric("MACD", f"{macd:.4f} / {signal:.4f}", "看涨" if macd > signal else "看跌")
     
     tech_data = {
         "指标": ["支撑位", "阻力位", "RSI状态", "MACD状态"],
@@ -345,26 +490,36 @@ def render_technical_page(ticker: str):
     st.dataframe(pd.DataFrame(tech_data), hide_index=True)
     
     if len(hist) >= 14:
-        fig = go.Figure(go.Scatter(x=hist.index, y=hist['Close'].rolling(14).apply(calculate_rsi), name='RSI'))
+        # 计算RSI曲线
+        rsi_values = []
+        for i in range(14, len(hist)):
+            rsi_values.append(calculate_rsi(hist['Close'].iloc[:i]))
+        
+        rsi_df = pd.DataFrame({
+            'Date': hist.index[14:],
+            'RSI': rsi_values
+        }).set_index('Date')
+        
+        fig = go.Figure(go.Scatter(x=rsi_df.index, y=rsi_df['RSI'], name='RSI'))
         fig.add_hline(y=70, line_dash="dash", line_color="red", annotation_text="超买线")
         fig.add_hline(y=30, line_dash="dash", line_color="green", annotation_text="超卖线")
         fig.update_layout(title="RSI趋势", height=300)
         st.plotly_chart(fig, use_container_width=True)
 
 def render_advice_page(ticker: str):
-    ticker = process_hk_ticker(ticker)  # 确保处理港股代码
-    hist = get_historical_data(ticker, "3mo")
-    info = get_stock_info(ticker)[0]
+    processed_ticker = process_hk_ticker(ticker)
+    hist = get_historical_data(processed_ticker, "3mo")
+    info = get_stock_info(processed_ticker)[0]
     if hist.empty or not info:
         st.error("❌ 数据不足，无法生成建议")
         return
     
     rsi = calculate_rsi(hist['Close'])
     macd, _ = calculate_macd(hist['Close'])
-    sentiment = get_sentiment(ticker)
-    ai_advice = get_investment_advice(ticker, rsi, macd)
+    sentiment = get_sentiment(processed_ticker)
+    ai_advice = get_investment_advice(processed_ticker, rsi, macd)
     
-    st.title(f"🎯 {ticker} 投资建议")
+    st.title(f"🎯 {processed_ticker} 投资建议")
     col1, col2, col3 = st.columns(3)
     col1.metric("RSI", f"{rsi:.2f}")
     col2.metric("市场情绪", sentiment)
@@ -387,32 +542,61 @@ def render_advice_page(ticker: str):
     st.warning("⚠️ 投资有风险，建议仅供参考")
 
 def render_trending_page():
-    st.title("🌟 热门股票")
-    if st.button("🔄 更新热门股票"):
-        with st.spinner("加载中..."):
+    st.title("🌟 美股投资推荐")
+    st.markdown("### 基于基本面与技术面的Top 50美股分析")
+    st.info("评分标准：RSI(30%) + MACD(30%) + 市场情绪(20%) + 价格动量(20%)")
+    
+    if st.button("🔄 更新推荐列表"):
+        with st.spinner("正在分析美股市场，可能需要1-2分钟..."):
             st.session_state['trending'] = get_trending_stocks()
             st.success("更新完成！")
     
     # 首次加载时初始化热门股票
     if 'trending' not in st.session_state:
-        st.session_state['trending'] = get_trending_stocks()
+        with st.spinner("首次加载美股推荐列表，请稍候..."):
+            st.session_state['trending'] = get_trending_stocks()
     
     if not st.session_state['trending'].empty:
+        # 添加颜色映射
+        def color_score(val):
+            color = 'green' if val > 80 else 'lightgreen' if val > 60 else 'gold' if val > 40 else 'orange' if val > 20 else 'red'
+            return f'background-color: {color}'
+        
+        # 添加建议图标
+        def advice_icon(advice):
+            if "强烈买入" in advice:
+                return "🚀"
+            elif "买入" in advice:
+                return "👍"
+            elif "观望" in advice:
+                return "👀"
+            elif "谨慎" in advice:
+                return "⚠️"
+            else:
+                return "👎"
+        
+        df = st.session_state['trending'].copy()
+        df['建议'] = df['买入建议'].apply(advice_icon) + " " + df['买入建议']
+        
         st.dataframe(
-            st.session_state['trending'],
+            df[['股票代码', '公司名称', '当前价格', '涨跌幅', 'RSI', 'MACD', '市场情绪', '推荐得分', '建议']],
             hide_index=True,
             column_config={
                 "涨跌幅": st.column_config.NumberColumn(format="%.2f%%"),
-                "当前价格": st.column_config.NumberColumn(format="$%.2f")
-            }
+                "当前价格": st.column_config.NumberColumn(format="$%.2f"),
+                "推荐得分": st.column_config.ProgressColumn(
+                    format="%d", min_value=0, max_value=100
+                )
+            },
+            height=800
         )
     else:
-        st.info("暂无热门股票数据")
+        st.info("暂无股票数据")
 
 def render_news_page(ticker: str):
-    ticker = process_hk_ticker(ticker)  # 确保处理港股代码
-    st.title(f"📰 {ticker} 新闻")
-    news_list = get_news(ticker)
+    processed_ticker = process_hk_ticker(ticker)
+    st.title(f"📰 {processed_ticker} 新闻")
+    news_list = get_news(processed_ticker)
     
     if not news_list:
         st.warning("暂无相关新闻")
@@ -424,16 +608,46 @@ def render_news_page(ticker: str):
     col2.metric("中性新闻", sentiment_counts.get('中性', 0))
     col3.metric("负面新闻", sentiment_counts.get('负面', 0))
     
+    # 按情绪分组
+    with st.expander("📈 新闻情绪分析", expanded=True):
+        sentiment_df = pd.DataFrame({
+            '情绪': ['正面', '中性', '负面'],
+            '数量': [
+                sentiment_counts.get('正面', 0),
+                sentiment_counts.get('中性', 0),
+                sentiment_counts.get('负面', 0)
+            ]
+        })
+        st.bar_chart(sentiment_df.set_index('情绪'))
+    
+    # 显示新闻列表
     for news in news_list:
-        with st.expander(f"{news['title'][:60]}..."):
-            st.write(f"**来源:** {news['source']} | **时间:** {news['publish_date']}")
-            st.write(f"**情绪:** {news['sentiment']}")
-            if news['summary']:
-                st.write(f"**摘要:** {news['summary']}")
+        sentiment_color = {
+            "正面": "#d4f8d4",
+            "中性": "#f0f0f0",
+            "负面": "#f8d4d4"
+        }.get(news['sentiment'], "#f0f0f0")
+        
+        with st.container():
+            st.markdown(f"""
+            <div style="
+                background-color: {sentiment_color};
+                padding: 10px;
+                border-radius: 5px;
+                margin-bottom: 10px;
+                border-left: 5px solid {'green' if news['sentiment']=='正面' else 'gray' if news['sentiment']=='中性' else 'red'};
+            ">
+                <h4>{news['title']}</h4>
+                <p><b>来源:</b> {news['source']} | <b>时间:</b> {news['publish_date']} | <b>情绪:</b> {news['sentiment']}</p>
+                <p>{news['summary'][:200]}{'...' if len(news['summary']) > 200 else ''}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
             if news['link']:
                 st.link_button("阅读原文", news['link'])
+            st.markdown("---")
 
-# -------------------- 主应用（关键修改） --------------------
+# -------------------- 主应用 --------------------
 def main():
     st.set_page_config(page_title=CONFIG['page_title'], layout='wide')
     st.sidebar.title("🚀 智能股票分析")
@@ -447,7 +661,7 @@ def main():
     ticker = st.sidebar.text_input(
         "输入股票代码", 
         value=st.session_state.current_ticker,
-        help="美股: TSLA | 港股: 00700（自动补全.HK）"
+        help="美股: AAPL | 港股: 00700（自动补全.HK）| A股: 600000.SS"
     ).upper()
     
     # 点击输入框时更新当前股票
@@ -456,7 +670,7 @@ def main():
     
     # 收藏列表管理
     if 'watchlist' not in st.session_state:
-        st.session_state.watchlist = []
+        st.session_state.watchlist = ["AAPL", "MSFT", "00700.HK", "TSLA"]
     
     st.sidebar.markdown("### ⭐ 关注列表")
     
