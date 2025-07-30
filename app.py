@@ -279,7 +279,7 @@ const StockAnalyzer = () => {
             {[1, 2, 3].map((i) => (
               <div key={i} className="bg-gray-700 p-3 rounded flex justify-between items-center">
                 <div className="flex-1">
-                  <div className="text-white text-sm">— 中性</div>
+                  <div className="text-white text-sm">- 中性</div>
                 </div>
                 <div className="text-gray-400 text-xs">1970-01-01 00:00:00</div>
               </div>
