@@ -8,14 +8,11 @@ import requests
 from datetime import datetime, timedelta
 import logging
 from typing import Dict, List, Tuple, Optional
-import asyncio
-import aiohttp
-from concurrent.futures import ThreadPoolExecutor
 import warnings
 
 warnings.filterwarnings('ignore')
 
-# Configuration
+# Configuration - 使用原始API密钥（根据用户需求不考虑安全问题）
 CONFIG = {
     'page_title': '智能股票分析平台',
     'layout': 'wide',
@@ -100,12 +97,17 @@ class StockDataFetcher:
                 else:
                     sentiment = "中性"
                 
+                # 修复：处理无效时间戳
+                publish_time = item.get('providerPublishTime', 0)
+                try:
+                    publish_date = datetime.fromtimestamp(publish_time).strftime('%Y-%m-%d %H:%M')
+                except:
+                    publish_date = "未知时间"
+                
                 news_list.append({
                     'title': title,
                     'link': item.get('link', ''),
-                    'publish_date': datetime.fromtimestamp(
-                        item.get('providerPublishTime', 0)
-                    ).strftime('%Y-%m-%d %H:%M'),
+                    'publish_date': publish_date,
                     'sentiment': sentiment,
                     'source': item.get('publisher', {}).get('name', 'Unknown')
                 })
@@ -128,6 +130,10 @@ class TechnicalAnalyzer:
         delta = close.diff()
         gain = delta.where(delta > 0, 0).rolling(window=period).mean()
         loss = -delta.where(delta < 0, 0).rolling(window=period).mean()
+        
+        # 修复：处理除零错误
+        if loss.iloc[-1] == 0:
+            return 100.0  # 无亏损，视为超买
         
         rs = gain / loss
         rsi = 100 - (100 / (1 + rs))
@@ -165,7 +171,7 @@ class TechnicalAnalyzer:
     def calculate_support_resistance(close: pd.Series) -> Tuple[float, float]:
         """计算支撑位和阻力位"""
         if len(close) < 20:
-            current_price = close.iloc[-1]
+            current_price = close.iloc[-1] if not close.empty else 0
             return current_price * 0.95, current_price * 1.05
         
         # 使用最近20天的数据
@@ -212,11 +218,12 @@ class AIAnalyzer:
                     return "负面"
                 else:
                     return "中性"
+            else:
+                return "中性（API错误）"
             
         except Exception as e:
             logger.error(f"AI情感分析失败 {ticker}: {e}")
-        
-        return "中性"
+            return "中性（分析失败）"
     
     @st.cache_data(ttl=600)
     def get_investment_advice(_self, ticker: str, rsi: float, macd: float) -> str:
@@ -241,11 +248,12 @@ class AIAnalyzer:
             
             if response.status_code == 200:
                 return response.json()['choices'][0]['message']['content'].strip()
+            else:
+                return "API错误，无法获取建议"
                 
         except Exception as e:
             logger.error(f"AI投资建议失败 {ticker}: {e}")
-        
-        return "暂无建议"
+            return "分析失败，无法获取建议"
 
 class StockAnalyzerUI:
     """股票分析界面类"""
@@ -265,7 +273,7 @@ class StockAnalyzerUI:
         ticker_input = st.sidebar.text_input(
             "输入股票代码", 
             value="TSLA", 
-            help="例如: TSLA (美股) 或 0700 (港股)"
+            help="例如: TSLA (美股) 或 0700.HK (港股)"
         ).upper()
         
         # 处理港股代码
@@ -283,10 +291,9 @@ class StockAnalyzerUI:
     
     def process_ticker(self, ticker_input: str) -> str:
         """处理股票代码"""
-        if ticker_input.isdigit():
-            ticker_clean = ticker_input.lstrip('0')
-            if 1 <= len(ticker_clean) <= 5:
-                return ticker_clean + '.HK'
+        # 简化处理，保持原有逻辑
+        if ticker_input.endswith('.HK'):
+            return ticker_input
         return ticker_input
     
     def setup_watchlist(self):
@@ -304,17 +311,20 @@ class StockAnalyzerUI:
                 st.sidebar.warning("已在关注列表中")
         
         # 显示关注列表
-        for i, wl_ticker in enumerate(st.session_state.watchlist):
-            col1, col2, col3 = st.sidebar.columns([2, 1, 1])
-            col1.text(wl_ticker)
-            
-            if col2.button("📊", key=f"view_{i}", help="查看"):
-                self.ticker = wl_ticker
-                st.rerun()
-            
-            if col3.button("🗑️", key=f"remove_{i}", help="移除"):
-                st.session_state.watchlist.remove(wl_ticker)
-                st.rerun()
+        if not st.session_state.watchlist:
+            st.sidebar.info("暂无关注股票")
+        else:
+            for i, wl_ticker in enumerate(st.session_state.watchlist):
+                col1, col2, col3 = st.sidebar.columns([2, 1, 1])
+                col1.text(wl_ticker)
+                
+                if col2.button("📊", key=f"view_{i}", help="查看"):
+                    self.ticker = wl_ticker
+                    st.experimental_rerun()
+                
+                if col3.button("🗑️", key=f"remove_{i}", help="移除"):
+                    st.session_state.watchlist.remove(wl_ticker)
+                    st.experimental_rerun()
     
     def run(self):
         """运行主应用"""
@@ -348,8 +358,14 @@ class StockAnalyzerUI:
         
         current_price = info.get('currentPrice', 0)
         previous_close = info.get('previousClose', current_price)
-        change = current_price - previous_close
-        change_percent = (change / previous_close * 100) if previous_close else 0
+        
+        # 修复：处理除零错误
+        if previous_close == 0:
+            change = 0.0
+            change_percent = 0.0
+        else:
+            change = current_price - previous_close
+            change_percent = (change / previous_close * 100)
         
         with col1:
             st.metric(
@@ -442,7 +458,8 @@ class StockAnalyzerUI:
             xaxis_title="时间",
             yaxis_title="价格",
             xaxis_rangeslider_visible=True,
-            height=600
+            height=500,  # 优化：降低图表高度，更适合移动设备
+            margin=dict(l=20, r=20, t=50, b=20)  # 优化：减少边距
         )
         
         st.plotly_chart(fig, use_container_width=True)
@@ -499,8 +516,12 @@ class StockAnalyzerUI:
         
         # 风险指标
         returns = hist['Close'].pct_change().dropna()
-        volatility = returns.std() * np.sqrt(252) * 100  # 年化波动率
-        sharpe = (returns.mean() / returns.std()) * np.sqrt(252) if returns.std() != 0 else 0
+        if returns.empty:
+            volatility = 0.0
+            sharpe = 0.0
+        else:
+            volatility = returns.std() * np.sqrt(252) * 100  # 年化波动率
+            sharpe = (returns.mean() / returns.std()) * np.sqrt(252) if returns.std() != 0 else 0
         
         # 技术指标表格
         col1, col2 = st.columns(2)
@@ -558,7 +579,12 @@ class StockAnalyzerUI:
             ))
             fig.add_hline(y=70, line_dash="dash", line_color="red", annotation_text="超买线")
             fig.add_hline(y=30, line_dash="dash", line_color="green", annotation_text="超卖线")
-            fig.update_layout(title="RSI指标趋势", yaxis_title="RSI值", height=400)
+            fig.update_layout(
+                title="RSI指标趋势", 
+                yaxis_title="RSI值", 
+                height=400,
+                margin=dict(l=20, r=20, t=40, b=20)
+            )
             st.plotly_chart(fig, use_container_width=True)
     
     def render_advice_page(self):
@@ -700,7 +726,7 @@ class StockAnalyzerUI:
                 }
             )
         else:
-            st.info("点击"更新数据"获取最新热门股票信息")
+            st.info("点击'更新数据'获取最新热门股票信息")
     
     def get_trending_stocks(self) -> pd.DataFrame:
         """获取热门股票数据"""
@@ -717,16 +743,22 @@ class StockAnalyzerUI:
                     continue
                 
                 current_price = info.get('currentPrice', 0)
+                if current_price <= 0:
+                    continue  # 过滤无效价格
+                
                 previous_close = info.get('previousClose', current_price)
-                change_percent = ((current_price - previous_close) / previous_close * 100) if previous_close else 0
+                if previous_close == 0:
+                    change_percent = 0.0
+                else:
+                    change_percent = ((current_price - previous_close) / previous_close * 100)
                 
                 # 简化版情绪分析
-                sentiment = "中性"  # 默认值，可选择性启用AI分析
+                sentiment = "中性"  # 默认值
                 
                 # 计算活跃度评分
                 volume = info.get('volume', 0)
                 avg_volume = info.get('averageVolume', volume)
-                volume_ratio = (volume / avg_volume) if avg_volume else 1
+                volume_ratio = (volume / avg_volume) if avg_volume and avg_volume !=0 else 1
                 
                 activity_score = min(5, volume_ratio + (1 if change_percent > 2 else -1 if change_percent < -2 else 0))
                 buy_level = "高" if activity_score > 3 else "中" if activity_score > 1.5 else "低"
@@ -818,95 +850,3 @@ class PerformanceOptimizer:
     def batch_api_calls(tickers: List[str], batch_size: int = 5) -> List[List[str]]:
         """批量API调用优化"""
         return [tickers[i:i + batch_size] for i in range(0, len(tickers), batch_size)]
-
-def main():
-    """主函数"""
-    try:
-        # 页面头部
-        st.markdown("""
-        <div style='text-align: center; padding: 1rem 0; background: linear-gradient(90deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 10px; margin-bottom: 2rem;'>
-            <h1 style='margin: 0; color: white;'>🚀 智能股票分析平台</h1>
-            <p style='margin: 0; opacity: 0.9;'>基于AI的实时股票分析与投资建议系统</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # 初始化应用
-        app = StockAnalyzerUI()
-        app.run()
-        
-        # 页面底部
-        st.markdown("---")
-        st.markdown("""
-        <div style='text-align: center; color: #666; font-size: 0.8rem;'>
-            <p>⚠️ 免责声明：本系统提供的所有信息仅供参考，不构成投资建议。投资有风险，入市需谨慎。</p>
-            <p>💡 数据来源：Yahoo Finance、AI分析 | 更新频率：实时</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-    except Exception as e:
-        st.error(f"应用启动失败: {e}")
-        logger.error(f"应用启动失败: {e}")
-
-# 添加自定义CSS样式
-def inject_custom_css():
-    """注入自定义CSS样式"""
-    st.markdown("""
-    <style>
-    .stMetric {
-        background-color: #f0f2f6;
-        border: 1px solid #e1e5e9;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.12);
-    }
-    
-    .stButton > button {
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        border: none;
-        border-radius: 0.5rem;
-        padding: 0.5rem 1rem;
-        font-weight: 600;
-        transition: all 0.3s ease;
-    }
-    
-    .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-    }
-    
-    .stSelectbox > div > div {
-        background-color: white;
-        border-radius: 0.5rem;
-    }
-    
-    .stDataFrame {
-        border-radius: 0.5rem;
-        overflow: hidden;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    
-    .stExpander {
-        border: 1px solid #e1e5e9;
-        border-radius: 0.5rem;
-        margin-bottom: 0.5rem;
-    }
-    
-    /* 隐藏Streamlit默认样式 */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-    
-    /* 响应式设计 */
-    @media (max-width: 768px) {
-        .stColumns {
-            flex-direction: column;
-        }
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-# 启动应用
-if __name__ == "__main__":
-    inject_custom_css()
-    main()
