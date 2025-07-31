@@ -946,8 +946,14 @@ def main():
     if 'current_ticker' not in st.session_state:
         st.session_state.current_ticker = "TSLA"  # 默认股票改为TSLA
     
+    # 修复1：增强历史记录管理
     if 'search_history' not in st.session_state:
         st.session_state.search_history = ["TSLA", "AAPL", "MSFT", "0700"]
+    
+    # 添加清空历史记录按钮
+    if st.sidebar.button("🗑️ 清空历史记录", use_container_width=True, key="clear_history"):
+        st.session_state.search_history = []
+        st.sidebar.success("历史记录已清空！")
     
     # 股票代码输入（带历史记录）
     st.sidebar.markdown("### 🔍 股票查询")
@@ -956,32 +962,22 @@ def main():
     new_ticker = st.sidebar.text_input(
         "输入股票代码", 
         value=st.session_state.current_ticker,
-        help="美股: TSLA | 港股: 0700（4位数字）"
+        help="美股: TSLA | 港股: 0700（4位数字）",
+        key="search_input"
     ).upper()
     
-    # 添加历史记录选择器
+    # 修复2：使用按钮列表显示历史记录（而不是下拉选择框）
     if st.session_state.search_history:
-        selected_history = st.sidebar.selectbox(
-            "历史查询记录", 
-            options=st.session_state.search_history,
-            index=0,
-            help="选择历史查询记录"
-        )
-        
-        # 如果选择了历史记录，则更新当前股票
-        if selected_history and selected_history != st.session_state.current_ticker:
-            st.session_state.current_ticker = selected_history
-            st.experimental_rerun()
-    
-    # 更新当前股票
-    if new_ticker and new_ticker != st.session_state.current_ticker:
-        st.session_state.current_ticker = new_ticker
-        # 添加到历史记录
-        if new_ticker not in st.session_state.search_history:
-            st.session_state.search_history.insert(0, new_ticker)
-            # 只保留最近10条历史记录
-            if len(st.session_state.search_history) > 10:
-                st.session_state.search_history = st.session_state.search_history[:10]
+        st.sidebar.markdown("**📜 历史查询记录**")
+        unique_history = list(dict.fromkeys(st.session_state.search_history))
+        for query in unique_history[:10]:  # 最多显示10条
+            if st.sidebar.button(
+                f"📌 {query}", 
+                key=f"hist_{hash(query)}", 
+                use_container_width=True
+            ):
+                st.session_state.current_ticker = query
+                st.experimental_rerun()
     
     st.sidebar.markdown("---")
     page = st.sidebar.radio("📋 功能菜单", [
@@ -991,6 +987,16 @@ def main():
     
     # 使用会话状态中的当前股票进行查询
     active_ticker = st.session_state.current_ticker
+    
+    # 更新历史记录（如果输入了新股票）
+    if new_ticker and new_ticker != st.session_state.current_ticker:
+        st.session_state.current_ticker = new_ticker
+        # 添加到历史记录
+        if new_ticker not in st.session_state.search_history:
+            st.session_state.search_history.insert(0, new_ticker)
+            # 只保留最近10条历史记录
+            if len(st.session_state.search_history) > 10:
+                st.session_state.search_history = st.session_state.search_history[:10]
     
     if page == "📊 实时数据":
         render_realtime_page(active_ticker)
