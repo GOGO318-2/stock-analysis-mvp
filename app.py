@@ -10,6 +10,7 @@ import warnings
 from typing import Dict, List, Tuple, Optional
 import time
 import plotly.express as px
+import os
 
 warnings.filterwarnings('ignore')
 
@@ -18,14 +19,14 @@ CONFIG = {
     'page_title': '智能股票分析平台',
     'layout': 'wide',
     'api_keys': {
-        "finnhub": "ckq0dahr01qj3j9g4vrgckq0dahr01qj3j9g4vs0",
+        "finnhub": os.getenv("FINNHUB_API_KEY", "ckq0dahr01qj3j9g4vrgckq0dahr01qj3j9g4vs0"),
         "alpha_vantage": "Z45S0SLJGM378PIO",
         "polygon": "2CDgF277xEhkhKndj5yFMVONxBGFFShg"
     },
     'cache_timeout': 300,  # 5分钟缓存
     'news_api': {
         'url': 'https://finnhub.io/api/v1/company-news',
-        'key': "ckq0dahr01qj3j9g4vrgckq0dahr01qj3j9g4vs0"
+        'key': os.getenv("FINNHUB_API_KEY", "ckq0dahr01qj3j9g4vrgckq0dahr01qj3j9g4vs0")
     }
 }
 
@@ -56,6 +57,23 @@ def process_hk_ticker(ticker: str) -> str:
     ticker = ticker.zfill(4)
     
     return f"{ticker}.HK"
+
+def process_finnhub_ticker(ticker: str) -> str:
+    """处理港股代码用于Finnhub API（如 00700 → 0700-HK）"""
+    ticker = ticker.strip().upper()
+    
+    if ticker.endswith('.HK'):
+        ticker = ticker.replace('.HK', '')
+    
+    if not ticker.isdigit():
+        return ticker
+    
+    ticker = ticker.lstrip('0')
+    if not ticker:
+        return "0000.HK"
+    
+    ticker = ticker.zfill(4)
+    return f"{ticker}-HK"
 
 # -------------------- 数据获取函数 --------------------
 @st.cache_data(ttl=CONFIG['cache_timeout'])
@@ -173,7 +191,9 @@ def get_historical_data(ticker: str, period: str) -> pd.DataFrame:
 def get_news(ticker: str) -> List[Dict]:
     """使用Finnhub获取新闻（获取最近7天新闻）"""
     try:
-        processed_ticker = process_hk_ticker(ticker)
+        # 处理股票代码用于Finnhub API
+        finnhub_ticker = process_finnhub_ticker(ticker)
+        logger.info(f"使用股票代码获取新闻: {finnhub_ticker}")
         
         end_date = datetime.now()
         start_date = end_date - timedelta(days=7)
@@ -183,13 +203,15 @@ def get_news(ticker: str) -> List[Dict]:
         to_timestamp = int(end_date.timestamp())
         
         params = {
-            'symbol': processed_ticker,
+            'symbol': finnhub_ticker,
             'from': from_timestamp,
             'to': to_timestamp,
             'token': CONFIG['news_api']['key']
         }
         
         response = requests.get(CONFIG['news_api']['url'], params=params, timeout=15)
+        logger.info(f"Finnhub新闻API响应状态码: {response.status_code}")
+        
         if response.status_code == 200:
             news_items = response.json()
             # 过滤掉无效新闻
@@ -222,6 +244,8 @@ def get_news(ticker: str) -> List[Dict]:
                 image_url = None
                 if 'image' in item and item['image']:
                     image_url = item['image']
+                elif 'relatedImage' in item and item['relatedImage']:
+                    image_url = item['relatedImage']
                 
                 news_list.append({
                     'title': title,
@@ -229,13 +253,13 @@ def get_news(ticker: str) -> List[Dict]:
                     'publish_date': publish_date,
                     'sentiment': sentiment,
                     'source': item.get('source', 'Unknown'),
-                    'summary': item.get('summary', '暂无摘要'),
+                    'summary': item.get('summary', title[:150] + '...' if len(title) > 150 else title),
                     'image_url': image_url
                 })
             
             return news_list
         else:
-            logger.error(f"Finnhub新闻API失败，状态码: {response.status_code}")
+            logger.error(f"Finnhub新闻API失败，状态码: {response.status_code}, 响应: {response.text}")
             return []
     except Exception as e:
         logger.error(f"获取新闻失败 {ticker}: {e}")
@@ -852,7 +876,7 @@ def render_news_page(ticker: str):
     
     # 添加新闻加载状态
     with st.spinner("正在加载最新新闻..."):
-        news_list = get_news(processed_ticker)
+        news_list = get_news(ticker)  # 使用原始代码而不是处理后的代码
     
     # 添加新闻刷新按钮
     if st.button("🔄 刷新新闻数据", key="refresh_news"):
@@ -861,9 +885,23 @@ def render_news_page(ticker: str):
     
     if not news_list:
         st.warning("暂无相关新闻")
+        # 尝试直接获取新闻作为备用
+        try:
+            stock = yf.Ticker(processed_ticker)
+            news = stock.news
+            if news:
+                st.info("以下是从备用来源获取的新闻：")
+                for item in news[:5]:
+                    with st.expander(item['title']):
+                        st.write(f"**来源:** {item.get('publisher', '未知')}")
+                        st.write(f"**链接:** {item.get('link', '')}")
+                        st.write(f"**发布时间:** {datetime.fromtimestamp(item.get('providerPublishTime', 0)).strftime('%Y-%m-%d %H:%M') if item.get('providerPublishTime') else '未知时间'}")
+                        if 'thumbnail' in item and item['thumbnail']['resolutions']:
+                            st.image(item['thumbnail']['resolutions'][0]['url'])
+        except Exception as e:
+            st.error(f"获取备用新闻失败: {str(e)}")
         return
     
-    # 新闻情绪统计
     sentiment_counts = pd.Series([n['sentiment'] for n in news_list]).value_counts()
     col1, col2, col3 = st.columns(3)
     col1.metric("正面新闻", sentiment_counts.get('正面', 0))
@@ -895,15 +933,15 @@ def render_news_page(ticker: str):
         }.get(news['sentiment'], "#f0f0f0")
         
         with st.container():
-            cols = st.columns([1, 3])
+            cols = st.columns([1, 3]) if news.get('image_url') else st.columns([1])
             
             # 左侧：新闻图片
-            with cols[0]:
-                if news['image_url']:
+            if news.get('image_url'):
+                with cols[0]:
                     st.image(news['image_url'], use_column_width=True)
             
             # 右侧：新闻内容
-            with cols[1]:
+            with cols[1] if news.get('image_url') else st.container():
                 st.markdown(f"""
                 <div style="
                     background-color: {sentiment_color};
