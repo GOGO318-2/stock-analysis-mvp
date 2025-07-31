@@ -285,9 +285,13 @@ def get_sentiment(ticker: str) -> str:
         return "中性"
 
 # -------------------- 投资建议函数（分短期、中期、长期） --------------------
-def get_investment_advice(ticker: str, hist: pd.DataFrame, current_price: float) -> Tuple[str, str, str, List[float]]:
-    """分短期、中期、长期给出投资建议和买入价格范围"""
+def get_investment_advice(ticker: str, hist: pd.DataFrame, info: dict) -> Tuple[str, str, str, List[float]]:
+    """分短期、中期、长期给出投资建议和买入价格范围，基于实时数据分析"""
     try:
+        # 获取当前价格
+        current_price = info.get('currentPrice', 0)
+        currency = info.get('currency', 'USD')
+        
         # 计算技术指标
         rsi = calculate_rsi(hist['Close'])
         macd, signal = calculate_macd(hist['Close'])
@@ -303,7 +307,12 @@ def get_investment_advice(ticker: str, hist: pd.DataFrame, current_price: float)
         # 计算支撑位和阻力位
         support, resistance = calculate_support_resistance(hist['Close'])
         
-        # 短期建议 (1周内)
+        # 获取基本面数据
+        pe_ratio = info.get('trailingPE', 0)
+        pb_ratio = info.get('priceToBook', 0)
+        dividend_yield = info.get('dividendYield', 0) * 100 if info.get('dividendYield') else 0
+        
+        # 短期建议 (1周内) - 基于技术指标
         short_term = ""
         short_term_price = []
         if rsi < 30:
@@ -316,35 +325,36 @@ def get_investment_advice(ticker: str, hist: pd.DataFrame, current_price: float)
             short_term = "短期中性：技术指标未显示明显信号"
             short_term_price = [support, resistance]  # 在支撑位和阻力位之间
             
-        # 中期建议 (1-3个月)
+        # 中期建议 (1-3个月) - 结合技术和基本面
         medium_term = ""
         medium_term_price = []
-        if macd > signal:
-            medium_term = "中期看涨：MACD金叉形成，上涨趋势可能持续"
+        if macd > signal and sentiment == "正面":
+            medium_term = "中期看涨：MACD金叉形成，市场情绪积极"
             medium_term_price = [ma_medium * 0.98, ma_medium * 1.05]  # 20日均线附近
+        elif macd < signal and sentiment == "负面":
+            medium_term = "中期谨慎：MACD死叉形成，市场情绪谨慎"
+            medium_term_price = [ma_medium * 0.95, ma_medium]  # 20日均线下方
         else:
-            medium_term = "中期中性：MACD未形成明显趋势"
+            medium_term = "中期中性：技术指标和市场情绪未形成明显趋势"
             medium_term_price = [support, resistance]  # 在支撑位和阻力位之间
             
-        # 长期建议 (6个月以上)
+        # 长期建议 (6个月以上) - 基于基本面和长期趋势
         long_term = ""
         long_term_price = []
-        if current_price > ma_long:
-            long_term = "长期看涨：股价位于长期均线之上，整体趋势向上"
+        if current_price > ma_long and pe_ratio < 25 and pb_ratio < 3:
+            long_term = "长期看涨：股价位于长期均线之上，估值合理"
             long_term_price = [ma_long * 0.95, ma_long * 1.10]  # 长期均线附近
+        elif current_price < ma_long and pe_ratio > 30 and pb_ratio > 5:
+            long_term = "长期谨慎：股价低于长期均线，估值偏高"
+            long_term_price = [ma_long * 0.85, ma_long * 0.95]  # 长期均线下方
         else:
-            long_term = "长期中性：股价位于长期均线附近，趋势不明朗"
+            long_term = "长期中性：基本面和技术面未显示明显优势或风险"
             long_term_price = [ma_long * 0.90, ma_long * 1.05]  # 长期均线附近
             
-        # 添加情绪因素
-        if sentiment == "正面":
-            short_term += " + 市场情绪积极"
-            medium_term += " + 市场情绪积极"
-            long_term += " + 市场情绪积极"
-        elif sentiment == "负面":
-            short_term += " - 市场情绪谨慎"
-            medium_term += " - 市场情绪谨慎"
-            long_term += " - 市场情绪谨慎"
+        # 添加详细分析
+        short_term += f"\n- RSI: {rsi:.2f}, 支撑位: {support:.2f}, 阻力位: {resistance:.2f}"
+        medium_term += f"\n- MACD: {macd:.4f}, Signal: {signal:.4f}, 市场情绪: {sentiment}"
+        long_term += f"\n- 市盈率: {pe_ratio:.2f}, 市净率: {pb_ratio:.2f}, 股息率: {dividend_yield:.2f}%"
             
         return short_term, medium_term, long_term, [
             short_term_price, 
@@ -354,9 +364,9 @@ def get_investment_advice(ticker: str, hist: pd.DataFrame, current_price: float)
     except Exception as e:
         logger.error(f"生成投资建议失败: {e}")
         return (
-            "短期建议：数据不足",
-            "中期建议：数据不足",
-            "长期建议：数据不足",
+            "短期建议：数据不足，无法生成建议",
+            "中期建议：数据不足，无法生成建议",
+            "长期建议：数据不足，无法生成建议",
             [[0, 0], [0, 0], [0, 0]]
         )
 
@@ -463,20 +473,7 @@ def get_trending_stocks() -> pd.DataFrame:
         return df
     except Exception as e:
         logger.error(f"获取热门股票失败: {e}")
-        return pd.DataFrame([
-            {'股票代码': 'AAPL', '公司名称': '苹果', '当前价格': 180.2, '涨跌幅': 0.8, 
-             'RSI': 45.2, 'MACD': 0.12, '市场情绪': '正面', '情绪分数': 100, '推荐得分': 85, '买入建议': '强烈买入'},
-            {'股票代码': 'MSFT', '公司名称': '微软', '当前价格': 340.5, '涨跌幅': 1.2, 
-             'RSI': 38.7, 'MACD': 0.25, '市场情绪': '正面', '情绪分数': 100, '推荐得分': 82, '买入建议': '强烈买入'},
-            {'股票代码': 'GOOGL', '公司名称': '谷歌', '当前价格': 138.2, '涨跌幅': -0.3, 
-             'RSI': 52.1, 'MACD': -0.08, '市场情绪': '中性', '情绪分数': 50, '推荐得分': 65, '买入建议': '买入'},
-            {'股票代码': 'AMZN', '公司名称': '亚马逊', '当前价格': 178.5, '涨跌幅': 2.1, 
-             'RSI': 58.3, 'MACD': 0.15, '市场情绪': '正面', '情绪分数': 100, '推荐得分': 78, '买入建议': '买入'},
-            {'股票代码': 'TSLA', '公司名称': '特斯拉', '当前价格': 240.5, '涨跌幅': -1.5, 
-             'RSI': 68.2, 'MACD': -0.12, '市场情绪': '中性', '情绪分数': 50, '推荐得分': 42, '买入建议': '观望'},
-            {'股票代码': 'JPM', '公司名称': '摩根大通', '当前价格': 198.3, '涨跌幅': 0.7, 
-             'RSI': 48.5, 'MACD': 0.08, '市场情绪': '正面', '情绪分数': 100, '推荐得分': 72, '买入建议': '买入'}
-        ])
+        return pd.DataFrame()
 
 # -------------------- 页面渲染函数 --------------------
 def render_realtime_page(ticker: str):
@@ -747,9 +744,10 @@ def render_advice_page(ticker: str):
     currency = info.get('currency', 'USD')
     
     # 获取分阶段投资建议和买入价格范围
-    short_term, medium_term, long_term, price_ranges = get_investment_advice(processed_ticker, hist, current_price)
+    short_term, medium_term, long_term, price_ranges = get_investment_advice(processed_ticker, hist, info)
     
     st.title(f"🎯 {processed_ticker} 投资建议")
+    st.caption(f"分析时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     # 显示当前价格
     st.metric("当前价格", f"{current_price:.2f} {currency}")
@@ -761,34 +759,16 @@ def render_advice_page(ticker: str):
         st.subheader("短期投资建议")
         st.info(short_term)
         st.markdown(f"**建议买入价格范围:** `{price_ranges[0][0]:.2f} - {price_ranges[0][1]:.2f} {currency}`")
-        st.markdown("""
-        **分析逻辑：**
-        - 基于RSI指标判断短期超买超卖情况
-        - 结合市场情绪分析短期市场心理
-        - 适合日内交易和短期波段操作
-        """)
         
     with tab2:
         st.subheader("中期投资建议")
         st.info(medium_term)
         st.markdown(f"**建议买入价格范围:** `{price_ranges[1][0]:.2f} - {price_ranges[1][1]:.2f} {currency}`")
-        st.markdown("""
-        **分析逻辑：**
-        - 基于MACD指标判断中期趋势方向
-        - 分析价格与中期均线关系
-        - 适合波段操作和中期持仓
-        """)
         
     with tab3:
         st.subheader("长期投资建议")
         st.info(long_term)
         st.markdown(f"**建议买入价格范围:** `{price_ranges[2][0]:.2f} - {price_ranges[2][1]:.2f} {currency}`")
-        st.markdown("""
-        **分析逻辑：**
-        - 基于长期均线判断整体趋势
-        - 结合基本面分析长期价值
-        - 适合价值投资和长期持仓
-        """)
     
     # 添加风险提示
     st.warning("⚠️ 投资有风险，以上建议仅供参考。实际决策请结合更多因素综合分析。")
@@ -809,11 +789,6 @@ def render_trending_page():
             st.session_state['trending'] = get_trending_stocks()
     
     if not st.session_state['trending'].empty:
-        # 添加颜色映射
-        def color_score(val):
-            color = 'green' if val > 80 else 'lightgreen' if val > 60 else 'gold' if val > 40 else 'orange' if val > 20 else 'red'
-            return f'background-color: {color}'
-        
         # 添加建议图标
         def advice_icon(advice):
             if "强烈买入" in advice:
@@ -865,6 +840,11 @@ def render_news_page(ticker: str):
     st.title(f"📰 {processed_ticker} 新闻")
     st.info("显示最近7天相关新闻")
     
+    # 添加新闻刷新按钮
+    if st.button("🔄 刷新新闻数据", key="refresh_news"):
+        st.cache_data.clear()
+        st.rerun()
+    
     news_list = get_news(processed_ticker)
     
     if not news_list:
@@ -879,7 +859,7 @@ def render_news_page(ticker: str):
                     with st.expander(item['title']):
                         st.write(f"**来源:** {item.get('publisher', '未知')}")
                         st.write(f"**链接:** {item.get('link', '')}")
-                        st.write(f"**发布时间:** {item.get('providerPublishTime', '未知时间')}")
+                        st.write(f"**发布时间:** {datetime.fromtimestamp(item.get('providerPublishTime', 0)).strftime('%Y-%m-%d %H:%M') if item.get('providerPublishTime') else '未知时间'}")
                         if 'thumbnail' in item and item['thumbnail']['resolutions']:
                             st.image(item['thumbnail']['resolutions'][0]['url'])
         except:
@@ -942,23 +922,13 @@ def main():
     st.sidebar.title("🚀 智能股票分析")
     st.sidebar.markdown("---")
     
-    # 使用会话状态跟踪当前选中的股票和查询历史
+    # 使用会话状态跟踪当前选中的股票
     if 'current_ticker' not in st.session_state:
         st.session_state.current_ticker = "TSLA"  # 默认股票改为TSLA
     
-    # 修复1：增强历史记录管理
-    if 'search_history' not in st.session_state:
-        st.session_state.search_history = ["TSLA", "AAPL", "MSFT", "0700"]
-    
-    # 添加清空历史记录按钮
-    if st.sidebar.button("🗑️ 清空历史记录", use_container_width=True, key="clear_history"):
-        st.session_state.search_history = []
-        st.sidebar.success("历史记录已清空！")
-    
-    # 股票代码输入（带历史记录）
+    # 股票代码输入
     st.sidebar.markdown("### 🔍 股票查询")
     
-    # 使用组合输入框（文本输入+下拉选择）
     new_ticker = st.sidebar.text_input(
         "输入股票代码", 
         value=st.session_state.current_ticker,
@@ -966,18 +936,14 @@ def main():
         key="search_input"
     ).upper()
     
-    # 修复2：使用按钮列表显示历史记录（而不是下拉选择框）
-    if st.session_state.search_history:
-        st.sidebar.markdown("**📜 历史查询记录**")
-        unique_history = list(dict.fromkeys(st.session_state.search_history))
-        for query in unique_history[:10]:  # 最多显示10条
-            if st.sidebar.button(
-                f"📌 {query}", 
-                key=f"hist_{hash(query)}", 
-                use_container_width=True
-            ):
-                st.session_state.current_ticker = query
-                st.experimental_rerun()
+    # 热门股票快速访问
+    st.sidebar.markdown("**🚀 热门股票**")
+    hot_cols = st.sidebar.columns(3)
+    hot_stocks = ["AAPL", "MSFT", "GOOG", "AMZN", "TSLA", "0700"]
+    for i, stock in enumerate(hot_stocks):
+        if hot_cols[i % 3].button(stock, use_container_width=True):
+            st.session_state.current_ticker = stock
+            st.rerun()
     
     st.sidebar.markdown("---")
     page = st.sidebar.radio("📋 功能菜单", [
@@ -988,15 +954,9 @@ def main():
     # 使用会话状态中的当前股票进行查询
     active_ticker = st.session_state.current_ticker
     
-    # 更新历史记录（如果输入了新股票）
+    # 更新当前股票
     if new_ticker and new_ticker != st.session_state.current_ticker:
         st.session_state.current_ticker = new_ticker
-        # 添加到历史记录
-        if new_ticker not in st.session_state.search_history:
-            st.session_state.search_history.insert(0, new_ticker)
-            # 只保留最近10条历史记录
-            if len(st.session_state.search_history) > 10:
-                st.session_state.search_history = st.session_state.search_history[:10]
     
     if page == "📊 实时数据":
         render_realtime_page(active_ticker)
