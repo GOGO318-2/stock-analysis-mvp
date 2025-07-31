@@ -251,22 +251,14 @@ def get_news(ticker: str) -> List[Dict]:
                 except:
                     publish_date = "未知时间"
                 
-                # 添加图片URL（如果可用）
-                image_url = None
-                if 'image' in item and item['image']:
-                    image_url = item['image']
-                elif 'relatedImage' in item and item['relatedImage']:
-                    image_url = item['relatedImage']
-                
                 news_list.append({
-                    'title': title,
-                    'link': item.get('url', ''),
-                    'publish_date': publish_date,
-                    'sentiment': sentiment,
-                    'source': item.get('source', 'Unknown'),
-                    'summary': item.get('summary', title[:150] + '...' if len(title) > 150 else title),
-                    'image_url': image_url,
-                    'source_api': 'Finnhub'
+                    '标题': title,
+                    '链接': item.get('url', ''),
+                    '发布时间': publish_date,
+                    '情绪': sentiment,
+                    '来源': item.get('source', 'Unknown'),
+                    '摘要': item.get('summary', title[:150] + '...' if len(title) > 150 else title),
+                    '数据源': 'Finnhub'
                 })
             
             # 如果Finnhub返回了新闻，直接返回
@@ -308,22 +300,14 @@ def get_news(ticker: str) -> List[Dict]:
                 else:
                     publish_date = "未知时间"
                 
-                # 图片URL
-                image_url = None
-                if 'thumbnail' in item and item['thumbnail'].get('resolutions'):
-                    resolutions = item['thumbnail']['resolutions']
-                    if resolutions:
-                        image_url = resolutions[0].get('url')
-                
                 news_list.append({
-                    'title': title,
-                    'link': item.get('link', ''),
-                    'publish_date': publish_date,
-                    'sentiment': sentiment,
-                    'source': item.get('publisher', '未知来源'),
-                    'summary': item.get('summary', title[:150] + '...' if len(title) > 150 else title),
-                    'image_url': image_url,
-                    'source_api': 'Yahoo Finance'
+                    '标题': title,
+                    '链接': item.get('link', ''),
+                    '发布时间': publish_date,
+                    '情绪': sentiment,
+                    '来源': item.get('publisher', '未知来源'),
+                    '摘要': item.get('summary', title[:150] + '...' if len(title) > 150 else title),
+                    '数据源': 'Yahoo Finance'
                 })
             
             if news_list:
@@ -365,14 +349,13 @@ def get_news(ticker: str) -> List[Dict]:
                     sentiment = "负面"
                 
                 news_list.append({
-                    'title': title,
-                    'link': link,
-                    'publish_date': pub_date,
-                    'sentiment': sentiment,
-                    'source': source,
-                    'summary': title[:150] + '...' if len(title) > 150 else title,
-                    'image_url': None,
-                    'source_api': 'Google News'
+                    '标题': title,
+                    '链接': link,
+                    '发布时间': pub_date,
+                    '情绪': sentiment,
+                    '来源': source,
+                    '摘要': title[:150] + '...' if len(title) > 150 else title,
+                    '数据源': 'Google News'
                 })
             
             if news_list:
@@ -1007,11 +990,11 @@ def render_news_page(ticker: str):
         return
     
     # 显示新闻来源统计
-    source_counts = pd.Series([n.get('source_api', '未知') for n in news_list]).value_counts()
+    source_counts = pd.Series([n.get('数据源', '未知') for n in news_list]).value_counts()
     if not source_counts.empty:
         st.caption(f"新闻来源: {', '.join([f'{k}({v})' for k, v in source_counts.items()])}")
     
-    sentiment_counts = pd.Series([n['sentiment'] for n in news_list]).value_counts()
+    sentiment_counts = pd.Series([n['情绪'] for n in news_list]).value_counts()
     col1, col2, col3 = st.columns(3)
     col1.metric("正面新闻", sentiment_counts.get('正面', 0))
     col2.metric("中性新闻", sentiment_counts.get('中性', 0))
@@ -1033,43 +1016,52 @@ def render_news_page(ticker: str):
                      color_discrete_map={'正面':'#2ECC71', '中性':'#3498DB', '负面':'#E74C3C'})
         st.plotly_chart(fig, use_container_width=True)
     
-    # 显示新闻列表
-    for news in news_list:
-        sentiment_color = {
-            "正面": "#d4f8d4",
-            "中性": "#f0f0f0",
-            "负面": "#f8d4d4"
-        }.get(news['sentiment'], "#f0f0f0")
+    # 显示新闻表格 - 简化样式
+    st.markdown("### 新闻列表")
+    news_df = pd.DataFrame(news_list)
+    
+    # 只保留需要的列
+    if not news_df.empty:
+        news_df = news_df[['标题', '发布时间', '来源', '情绪', '数据源']]
         
-        with st.container():
-            cols = st.columns([1, 3]) if news.get('image_url') else st.columns([1])
-            
-            # 左侧：新闻图片
-            if news.get('image_url'):
-                with cols[0]:
-                    st.image(news['image_url'], use_column_width=True)
-            
-            # 右侧：新闻内容
-            with cols[1] if news.get('image_url') else st.container():
-                st.markdown(f"""
-                <div style="
-                    background-color: {sentiment_color};
-                    padding: 15px;
-                    border-radius: 10px;
-                    margin-bottom: 15px;
-                    border-left: 5px solid {'#2ECC71' if news['sentiment']=='正面' else '#3498DB' if news['sentiment']=='中性' else '#E74C3C'};
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                ">
-                    <h4 style="margin-top:0; margin-bottom:10px;">{news['title']}</h4>
-                    <p style="margin-bottom:5px;"><b>来源:</b> {news['source']} | <b>时间:</b> {news['publish_date']} | <b>情绪:</b> {news['sentiment']}</p>
-                    <p style="margin-bottom:10px;">{news['summary']}</p>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                if news['link']:
-                    st.link_button("阅读原文", news['link'])
-            
-            st.markdown("---")
+        # 创建外链列
+        news_df['链接'] = news_df.apply(lambda row: f"[阅读原文]({row['链接']})", axis=1)
+        
+        # 显示表格
+        st.dataframe(
+            news_df,
+            column_config={
+                "标题": st.column_config.TextColumn(
+                    "标题",
+                    width="large"
+                ),
+                "发布时间": st.column_config.TextColumn(
+                    "发布时间",
+                    width="medium"
+                ),
+                "来源": st.column_config.TextColumn(
+                    "来源",
+                    width="small"
+                ),
+                "情绪": st.column_config.TextColumn(
+                    "情绪",
+                    width="small"
+                ),
+                "数据源": st.column_config.TextColumn(
+                    "数据源",
+                    width="small"
+                ),
+                "链接": st.column_config.LinkColumn(
+                    "链接",
+                    display_text="阅读原文",
+                    width="small"
+                )
+            },
+            hide_index=True,
+            use_container_width=True
+        )
+    else:
+        st.info("暂无新闻数据")
 
 # -------------------- 回调函数 --------------------
 def update_current_ticker():
