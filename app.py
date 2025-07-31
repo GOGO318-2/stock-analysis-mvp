@@ -11,6 +11,9 @@ from typing import Dict, List, Tuple, Optional
 import time
 import plotly.express as px
 import os
+import json
+import random
+from urllib.parse import quote
 
 warnings.filterwarnings('ignore')
 
@@ -187,13 +190,22 @@ def get_historical_data(ticker: str, period: str) -> pd.DataFrame:
         logger.error(f"获取历史数据失败 {ticker}: {e}")
         return pd.DataFrame()
 
-@st.cache_data(ttl=CONFIG['cache_timeout'])
+# -------------------- 新闻获取函数（增强版） --------------------
+@st.cache_data(ttl=3600)  # 新闻缓存1小时
 def get_news(ticker: str) -> List[Dict]:
-    """使用Finnhub获取新闻（获取最近7天新闻）"""
+    """
+    获取股票相关新闻，使用多种备用方案：
+    1. 首先尝试Finnhub API
+    2. 如果失败，尝试yfinance新闻
+    3. 最后尝试Google搜索新闻
+    """
+    news_list = []
+    
+    # 方案1：尝试Finnhub API
     try:
         # 处理股票代码用于Finnhub API
         finnhub_ticker = process_finnhub_ticker(ticker)
-        logger.info(f"使用股票代码获取新闻: {finnhub_ticker}")
+        logger.info(f"使用Finnhub获取新闻: {finnhub_ticker}")
         
         end_date = datetime.now()
         start_date = end_date - timedelta(days=7)
@@ -216,7 +228,6 @@ def get_news(ticker: str) -> List[Dict]:
             news_items = response.json()
             # 过滤掉无效新闻
             news_items = [item for item in news_items if item.get('headline') and item.get('url')]
-            news_list = []
             
             positive_keywords = ['positive', 'bullish', 'surge', 'gain', 'up', 'buy', 'strong', 'growth', 'beat', 'increase']
             negative_keywords = ['negative', 'bearish', 'drop', 'loss', 'down', 'sell', 'weak', 'decline', 'miss', 'decrease', 'cut']
@@ -254,16 +265,124 @@ def get_news(ticker: str) -> List[Dict]:
                     'sentiment': sentiment,
                     'source': item.get('source', 'Unknown'),
                     'summary': item.get('summary', title[:150] + '...' if len(title) > 150 else title),
-                    'image_url': image_url
+                    'image_url': image_url,
+                    'source_api': 'Finnhub'
                 })
             
-            return news_list
-        else:
-            logger.error(f"Finnhub新闻API失败，状态码: {response.status_code}, 响应: {response.text}")
-            return []
+            # 如果Finnhub返回了新闻，直接返回
+            if news_list:
+                logger.info(f"从Finnhub获取到 {len(news_list)} 条新闻")
+                return news_list
     except Exception as e:
-        logger.error(f"获取新闻失败 {ticker}: {e}")
-        return []
+        logger.error(f"Finnhub获取新闻失败 {ticker}: {e}")
+    
+    # 方案2：尝试yfinance新闻
+    try:
+        logger.info(f"尝试使用yfinance获取新闻: {ticker}")
+        processed_ticker = process_hk_ticker(ticker)
+        stock = yf.Ticker(processed_ticker)
+        yf_news = stock.news
+        
+        if yf_news:
+            positive_keywords = ['positive', 'bullish', 'surge', 'gain', 'up', 'buy', 'strong', 'growth', 'beat', 'increase']
+            negative_keywords = ['negative', 'bearish', 'drop', 'loss', 'down', 'sell', 'weak', 'decline', 'miss', 'decrease', 'cut']
+            
+            for item in yf_news:
+                title = item.get('title', '')
+                title_lower = title.lower()
+                
+                # 情感分析
+                positive_count = sum(title_lower.count(kw) for kw in positive_keywords)
+                negative_count = sum(title_lower.count(kw) for kw in negative_keywords)
+                
+                sentiment = "中性"
+                if positive_count > negative_count:
+                    sentiment = "正面"
+                elif negative_count > positive_count:
+                    sentiment = "负面"
+                
+                # 发布时间
+                pub_time = item.get('providerPublishTime')
+                if pub_time:
+                    publish_date = datetime.fromtimestamp(pub_time).strftime('%Y-%m-%d %H:%M')
+                else:
+                    publish_date = "未知时间"
+                
+                # 图片URL
+                image_url = None
+                if 'thumbnail' in item and item['thumbnail'].get('resolutions'):
+                    resolutions = item['thumbnail']['resolutions']
+                    if resolutions:
+                        image_url = resolutions[0].get('url')
+                
+                news_list.append({
+                    'title': title,
+                    'link': item.get('link', ''),
+                    'publish_date': publish_date,
+                    'sentiment': sentiment,
+                    'source': item.get('publisher', '未知来源'),
+                    'summary': item.get('summary', title[:150] + '...' if len(title) > 150 else title),
+                    'image_url': image_url,
+                    'source_api': 'Yahoo Finance'
+                })
+            
+            if news_list:
+                logger.info(f"从yfinance获取到 {len(news_list)} 条新闻")
+                return news_list
+    except Exception as e:
+        logger.error(f"yfinance获取新闻失败 {ticker}: {e}")
+    
+    # 方案3：Google搜索作为最后备用
+    try:
+        logger.info(f"尝试使用Google搜索获取新闻: {ticker}")
+        # 获取公司名称用于搜索
+        info, _ = get_stock_info(ticker)
+        company_name = info.get('longName', ticker)
+        
+        # 创建搜索查询
+        query = f"{company_name} 股票 新闻"
+        search_url = f"https://news.google.com/rss/search?q={quote(query)}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
+        
+        response = requests.get(search_url, timeout=15)
+        if response.status_code == 200:
+            from xml.etree import ElementTree as ET
+            
+            root = ET.fromstring(response.content)
+            items = root.findall('.//item')
+            
+            # 最多获取10条新闻
+            for item in items[:10]:
+                title = item.find('title').text if item.find('title') is not None else "无标题"
+                link = item.find('link').text if item.find('link') is not None else "#"
+                pub_date = item.find('pubDate').text if item.find('pubDate') is not None else "未知时间"
+                source = item.find('source').text if item.find('source') is not None else "未知来源"
+                
+                # 简单的情感分析
+                sentiment = "中性"
+                if any(word in title.lower() for word in ['涨', '升', '利好', '增长', '盈利']):
+                    sentiment = "正面"
+                elif any(word in title.lower() for word in ['跌', '降', '利空', '亏损', '下滑']):
+                    sentiment = "负面"
+                
+                news_list.append({
+                    'title': title,
+                    'link': link,
+                    'publish_date': pub_date,
+                    'sentiment': sentiment,
+                    'source': source,
+                    'summary': title[:150] + '...' if len(title) > 150 else title,
+                    'image_url': None,
+                    'source_api': 'Google News'
+                })
+            
+            if news_list:
+                logger.info(f"从Google搜索获取到 {len(news_list)} 条新闻")
+                return news_list
+    except Exception as e:
+        logger.error(f"Google搜索获取新闻失败 {ticker}: {e}")
+    
+    # 所有方案都失败时返回空列表
+    return []
 
 # -------------------- 技术分析函数 --------------------
 def calculate_rsi(close: pd.Series, period: int = 14) -> float:
@@ -885,22 +1004,12 @@ def render_news_page(ticker: str):
     
     if not news_list:
         st.warning("暂无相关新闻")
-        # 尝试直接获取新闻作为备用
-        try:
-            stock = yf.Ticker(processed_ticker)
-            news = stock.news
-            if news:
-                st.info("以下是从备用来源获取的新闻：")
-                for item in news[:5]:
-                    with st.expander(item['title']):
-                        st.write(f"**来源:** {item.get('publisher', '未知')}")
-                        st.write(f"**链接:** {item.get('link', '')}")
-                        st.write(f"**发布时间:** {datetime.fromtimestamp(item.get('providerPublishTime', 0)).strftime('%Y-%m-%d %H:%M') if item.get('providerPublishTime') else '未知时间'}")
-                        if 'thumbnail' in item and item['thumbnail']['resolutions']:
-                            st.image(item['thumbnail']['resolutions'][0]['url'])
-        except Exception as e:
-            st.error(f"获取备用新闻失败: {str(e)}")
         return
+    
+    # 显示新闻来源统计
+    source_counts = pd.Series([n.get('source_api', '未知') for n in news_list]).value_counts()
+    if not source_counts.empty:
+        st.caption(f"新闻来源: {', '.join([f'{k}({v})' for k, v in source_counts.items()])}")
     
     sentiment_counts = pd.Series([n['sentiment'] for n in news_list]).value_counts()
     col1, col2, col3 = st.columns(3)
