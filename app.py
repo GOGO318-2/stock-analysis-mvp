@@ -19,8 +19,7 @@ CONFIG = {
     'api_keys': {
         "finnhub": "ckq0dahr01qj3j9g4vrgckq0dahr01qj3j9g4vs0",
         "alpha_vantage": "Z45S0SLJGM378PIO",
-        "polygon": "2CDgF277xEhkhKndj5yFMVONxBGFFShg",
-        "xai": "xai-N36diIqx3wkZz6eBGQfjadqdNe3H84FYfPsXXauU02ag1s5k45zida3aYocHu5Bi9AhT6jO5kFpjW7CD"
+        "polygon": "2CDgF277xEhkhKndj5yFMVONxBGFFShg"
     },
     'cache_timeout': 300,  # 5分钟缓存
     'news_api': {
@@ -33,44 +32,59 @@ CONFIG = {
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# -------------------- 港股代码处理函数 --------------------
+# -------------------- 港股代码处理函数（关键修复） --------------------
 def process_hk_ticker(ticker: str) -> str:
-    """处理港股代码，将5位数字格式转为 .HK 后缀格式（如 00700 → 00700.HK）"""
+    """处理港股代码，转换为正确的yfinance格式（如 00700 → 0700.HK）"""
     ticker = ticker.strip().upper()
-    if ticker.isdigit() and len(ticker) == 5 and not ticker.endswith('.HK'):
-        return f"{ticker}.HK"
-    elif ticker.endswith('.HK') and len(ticker) == 8:
+    
+    # 移除.HK后缀（如果有）
+    if ticker.endswith('.HK'):
+        ticker = ticker.replace('.HK', '')
+    
+    # 确保是数字代码
+    if not ticker.isdigit():
         return ticker
-    return ticker
+    
+    # 转换格式：保留4位有效数字，不足4位前面补0
+    # 港股代码在yfinance中要求4位数字（如0700.HK）
+    ticker = ticker.lstrip('0')
+    if not ticker:  # 全为0的情况
+        return "0000.HK"
+    
+    # 确保4位长度
+    ticker = ticker.zfill(4)
+    
+    return f"{ticker}.HK"
 
-# -------------------- 数据获取函数 --------------------
+# -------------------- 数据获取函数（增强港股支持） --------------------
 @st.cache_data(ttl=CONFIG['cache_timeout'])
 def get_stock_info(ticker: str) -> Tuple[Dict, pd.DataFrame]:
-    """获取股票基本信息，适配港股代码（自动补全.HK后缀）"""
+    """获取股票基本信息，优化港股支持"""
     try:
         processed_ticker = process_hk_ticker(ticker)
+        logger.info(f"处理后的股票代码: {processed_ticker}")
         
         # 尝试使用yfinance获取数据
         try:
             stock = yf.Ticker(processed_ticker)
             info = stock.info
             
-            try:
-                recommendations = stock.recommendations_summary
-                if recommendations is None or recommendations.empty:
-                    recommendations = pd.DataFrame()
-            except:
-                recommendations = pd.DataFrame()
+            # 检查是否获取到有效数据
+            if not info or 'currentPrice' not in info:
+                raise ValueError("yfinance返回空数据")
                 
-            return info, recommendations
+            return info, pd.DataFrame()
         except Exception as e:
             logger.warning(f"yfinance获取股票信息失败 {processed_ticker}: {e}")
             
-        # yfinance失败时使用Finnhub作为备用
+        # yfinance失败时使用Finnhub作为备用（特别是港股）
         url = f"https://finnhub.io/api/v1/stock/profile2?symbol={processed_ticker}"
         response = requests.get(url, params={"token": CONFIG['api_keys']['finnhub']}, timeout=10)
         if response.status_code == 200:
             info = response.json()
+            if not info:
+                return {}, pd.DataFrame()
+            
             # 获取实时报价
             quote_url = f"https://finnhub.io/api/v1/quote?symbol={processed_ticker}"
             quote_response = requests.get(quote_url, params={"token": CONFIG['api_keys']['finnhub']}, timeout=10)
@@ -81,6 +95,11 @@ def get_stock_info(ticker: str) -> Tuple[Dict, pd.DataFrame]:
                 info['dayHigh'] = quote_data.get('h', 0)
                 info['dayLow'] = quote_data.get('l', 0)
                 info['volume'] = quote_data.get('v', 0)
+            
+            # 获取公司名称
+            if 'name' not in info:
+                info['longName'] = processed_ticker
+                
             return info, pd.DataFrame()
         else:
             return {}, pd.DataFrame()
@@ -90,7 +109,7 @@ def get_stock_info(ticker: str) -> Tuple[Dict, pd.DataFrame]:
 
 @st.cache_data(ttl=CONFIG['cache_timeout'])
 def get_historical_data(ticker: str, period: str) -> pd.DataFrame:
-    """获取历史数据，适配港股代码"""
+    """获取历史数据，优化港股支持"""
     try:
         processed_ticker = process_hk_ticker(ticker)
         
@@ -105,19 +124,22 @@ def get_historical_data(ticker: str, period: str) -> pd.DataFrame:
         
         # yfinance失败时使用Finnhub作为备用
         end_date = datetime.now()
-        start_date = end_date - timedelta(days=365*5)  # 5年数据
         
         # 根据period调整时间范围
         if period == "1d":
-            start_date = end_date - timedelta(days=1)
+            days = 1
         elif period == "5d":
-            start_date = end_date - timedelta(days=5)
+            days = 5
         elif period == "1mo":
-            start_date = end_date - timedelta(days=30)
+            days = 30
         elif period == "3mo":
-            start_date = end_date - timedelta(days=90)
+            days = 90
         elif period == "1y":
-            start_date = end_date - timedelta(days=365)
+            days = 365
+        else:  # 5y
+            days = 365 * 5
+            
+        start_date = end_date - timedelta(days=days)
         
         url = f"https://finnhub.io/api/v1/stock/candle"
         params = {
@@ -131,7 +153,7 @@ def get_historical_data(ticker: str, period: str) -> pd.DataFrame:
         response = requests.get(url, params=params, timeout=15)
         if response.status_code == 200:
             data = response.json()
-            if data['s'] == 'ok':
+            if data.get('s') == 'ok' and 't' in data:
                 df = pd.DataFrame({
                     'Date': pd.to_datetime(data['t'], unit='s'),
                     'Open': data['o'],
@@ -149,7 +171,7 @@ def get_historical_data(ticker: str, period: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=CONFIG['cache_timeout'])
 def get_news(ticker: str) -> List[Dict]:
-    """使用Finnhub获取新闻，适配港股代码"""
+    """使用Finnhub获取新闻"""
     try:
         processed_ticker = process_hk_ticker(ticker)
         
@@ -394,7 +416,10 @@ def render_realtime_page(ticker: str):
     processed_ticker = process_hk_ticker(ticker)
     info, _ = get_stock_info(processed_ticker)
     if not info or 'currentPrice' not in info:
-        st.error(f"❌ 无法获取股票数据，请检查代码（港股请用5位数字，如00700）")
+        st.error(f"❌ 无法获取股票数据，请尝试以下解决方案：\n"
+                 f"1. 港股使用4位数字代码（如'0700'代表腾讯）\n"
+                 f"2. 美股使用股票代码（如'AAPL'）\n"
+                 f"3. 确保输入正确股票代码")
         return
     
     company_name = info.get('longName', processed_ticker)
@@ -647,7 +672,7 @@ def render_news_page(ticker: str):
                 st.link_button("阅读原文", news['link'])
             st.markdown("---")
 
-# -------------------- 主应用 --------------------
+# -------------------- 主应用（移除收藏功能） --------------------
 def main():
     st.set_page_config(page_title=CONFIG['page_title'], layout='wide')
     st.sidebar.title("🚀 智能股票分析")
@@ -655,50 +680,18 @@ def main():
     
     # 使用会话状态跟踪当前选中的股票
     if 'current_ticker' not in st.session_state:
-        st.session_state.current_ticker = "00700"
+        st.session_state.current_ticker = "AAPL"
     
     # 股票代码输入
     ticker = st.sidebar.text_input(
         "输入股票代码", 
         value=st.session_state.current_ticker,
-        help="美股: AAPL | 港股: 00700（自动补全.HK）| A股: 600000.SS"
+        help="美股: AAPL | 港股: 0700（4位数字）| A股: 600000.SS"
     ).upper()
     
     # 点击输入框时更新当前股票
     if ticker != st.session_state.current_ticker:
         st.session_state.current_ticker = ticker
-    
-    # 收藏列表管理
-    if 'watchlist' not in st.session_state:
-        st.session_state.watchlist = ["AAPL", "MSFT", "00700.HK", "TSLA"]
-    
-    st.sidebar.markdown("### ⭐ 关注列表")
-    
-    # 添加到关注按钮
-    if st.sidebar.button("➕ 添加到关注"):
-        processed_ticker = process_hk_ticker(ticker)
-        if processed_ticker not in st.session_state.watchlist:
-            st.session_state.watchlist.append(processed_ticker)
-            st.sidebar.success(f"已添加 {processed_ticker}")
-        else:
-            st.sidebar.warning("已在关注列表")
-    
-    # 显示收藏列表并添加点击事件
-    if st.session_state.watchlist:
-        for i, wl_ticker in enumerate(st.session_state.watchlist):
-            col1, col2 = st.sidebar.columns([3, 1])
-            
-            # 使用按钮实现点击事件
-            if col1.button(wl_ticker, key=f"wl_{i}"):
-                st.session_state.current_ticker = wl_ticker
-                st.experimental_rerun()
-            
-            # 删除按钮
-            if col2.button("❌", key=f"del_{i}"):
-                st.session_state.watchlist.remove(wl_ticker)
-                st.rerun()
-    else:
-        st.sidebar.info("暂无关注股票")
     
     st.sidebar.markdown("---")
     page = st.sidebar.radio("📋 功能菜单", [
