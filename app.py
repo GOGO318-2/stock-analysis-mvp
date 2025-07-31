@@ -203,10 +203,14 @@ def get_news(ticker: str) -> List[Dict]:
                 title = item.get('headline', '')
                 title_lower = title.lower()
                 
+                # 改进的情感分析算法
+                positive_count = sum(title_lower.count(kw) for kw in positive_keywords)
+                negative_count = sum(title_lower.count(kw) for kw in negative_keywords)
+                
                 sentiment = "中性"
-                if any(kw in title_lower for kw in positive_keywords):
+                if positive_count > negative_count:
                     sentiment = "正面"
-                elif any(kw in title_lower for kw in negative_keywords):
+                elif negative_count > positive_count:
                     sentiment = "负面"
                 
                 try:
@@ -214,13 +218,19 @@ def get_news(ticker: str) -> List[Dict]:
                 except:
                     publish_date = "未知时间"
                 
+                # 添加图片URL（如果可用）
+                image_url = None
+                if 'image' in item and item['image']:
+                    image_url = item['image']
+                
                 news_list.append({
                     'title': title,
                     'link': item.get('url', ''),
                     'publish_date': publish_date,
                     'sentiment': sentiment,
                     'source': item.get('source', 'Unknown'),
-                    'summary': item.get('summary', '暂无摘要')
+                    'summary': item.get('summary', '暂无摘要'),
+                    'image_url': image_url
                 })
             
             return news_list
@@ -840,32 +850,20 @@ def render_news_page(ticker: str):
     st.title(f"📰 {processed_ticker} 新闻")
     st.info("显示最近7天相关新闻")
     
+    # 添加新闻加载状态
+    with st.spinner("正在加载最新新闻..."):
+        news_list = get_news(processed_ticker)
+    
     # 添加新闻刷新按钮
     if st.button("🔄 刷新新闻数据", key="refresh_news"):
         st.cache_data.clear()
         st.rerun()
     
-    news_list = get_news(processed_ticker)
-    
     if not news_list:
         st.warning("暂无相关新闻")
-        # 尝试直接获取新闻作为备用
-        try:
-            stock = yf.Ticker(processed_ticker)
-            news = stock.news
-            if news:
-                st.info("以下是从备用来源获取的新闻：")
-                for item in news[:5]:
-                    with st.expander(item['title']):
-                        st.write(f"**来源:** {item.get('publisher', '未知')}")
-                        st.write(f"**链接:** {item.get('link', '')}")
-                        st.write(f"**发布时间:** {datetime.fromtimestamp(item.get('providerPublishTime', 0)).strftime('%Y-%m-%d %H:%M') if item.get('providerPublishTime') else '未知时间'}")
-                        if 'thumbnail' in item and item['thumbnail']['resolutions']:
-                            st.image(item['thumbnail']['resolutions'][0]['url'])
-        except:
-            pass
         return
     
+    # 新闻情绪统计
     sentiment_counts = pd.Series([n['sentiment'] for n in news_list]).value_counts()
     col1, col2, col3 = st.columns(3)
     col1.metric("正面新闻", sentiment_counts.get('正面', 0))
@@ -897,24 +895,40 @@ def render_news_page(ticker: str):
         }.get(news['sentiment'], "#f0f0f0")
         
         with st.container():
-            st.markdown(f"""
-            <div style="
-                background-color: {sentiment_color};
-                padding: 15px;
-                border-radius: 10px;
-                margin-bottom: 15px;
-                border-left: 5px solid {'#2ECC71' if news['sentiment']=='正面' else '#3498DB' if news['sentiment']=='中性' else '#E74C3C'};
-                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            ">
-                <h4 style="margin-top:0; margin-bottom:10px;">{news['title']}</h4>
-                <p style="margin-bottom:5px;"><b>来源:</b> {news['source']} | <b>时间:</b> {news['publish_date']} | <b>情绪:</b> {news['sentiment']}</p>
-                <p style="margin-bottom:10px;">{news['summary']}</p>
-            </div>
-            """, unsafe_allow_html=True)
+            cols = st.columns([1, 3])
             
-            if news['link']:
-                st.link_button("阅读原文", news['link'])
+            # 左侧：新闻图片
+            with cols[0]:
+                if news['image_url']:
+                    st.image(news['image_url'], use_column_width=True)
+            
+            # 右侧：新闻内容
+            with cols[1]:
+                st.markdown(f"""
+                <div style="
+                    background-color: {sentiment_color};
+                    padding: 15px;
+                    border-radius: 10px;
+                    margin-bottom: 15px;
+                    border-left: 5px solid {'#2ECC71' if news['sentiment']=='正面' else '#3498DB' if news['sentiment']=='中性' else '#E74C3C'};
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                ">
+                    <h4 style="margin-top:0; margin-bottom:10px;">{news['title']}</h4>
+                    <p style="margin-bottom:5px;"><b>来源:</b> {news['source']} | <b>时间:</b> {news['publish_date']} | <b>情绪:</b> {news['sentiment']}</p>
+                    <p style="margin-bottom:10px;">{news['summary']}</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                if news['link']:
+                    st.link_button("阅读原文", news['link'])
+            
             st.markdown("---")
+
+# -------------------- 回调函数 --------------------
+def update_current_ticker():
+    """更新当前选中的股票代码"""
+    if st.session_state.search_input and st.session_state.search_input != st.session_state.current_ticker:
+        st.session_state.current_ticker = st.session_state.search_input
 
 # -------------------- 主应用 --------------------
 def main():
@@ -929,12 +943,14 @@ def main():
     # 股票代码输入
     st.sidebar.markdown("### 🔍 股票查询")
     
-    new_ticker = st.sidebar.text_input(
+    # 使用on_change回调处理回车提交
+    st.sidebar.text_input(
         "输入股票代码", 
         value=st.session_state.current_ticker,
         help="美股: TSLA | 港股: 0700（4位数字）",
-        key="search_input"
-    ).upper()
+        key="search_input",
+        on_change=update_current_ticker
+    )
     
     # 热门股票快速访问
     st.sidebar.markdown("**🚀 热门股票**")
@@ -953,10 +969,6 @@ def main():
     
     # 使用会话状态中的当前股票进行查询
     active_ticker = st.session_state.current_ticker
-    
-    # 更新当前股票
-    if new_ticker and new_ticker != st.session_state.current_ticker:
-        st.session_state.current_ticker = new_ticker
     
     if page == "📊 实时数据":
         render_realtime_page(active_ticker)
