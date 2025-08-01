@@ -229,22 +229,11 @@ def get_news(ticker: str) -> List[Dict]:
             # 过滤掉无效新闻
             news_items = [item for item in news_items if item.get('headline') and item.get('url')]
             
-            positive_keywords = ['positive', 'bullish', 'surge', 'gain', 'up', 'buy', 'strong', 'growth', 'beat', 'increase']
-            negative_keywords = ['negative', 'bearish', 'drop', 'loss', 'down', 'sell', 'weak', 'decline', 'miss', 'decrease', 'cut']
+            # 只保留最新的10条新闻
+            news_items = sorted(news_items, key=lambda x: x.get('datetime', 0), reverse=True)[:10]
             
             for item in news_items:
                 title = item.get('headline', '')
-                title_lower = title.lower()
-                
-                # 改进的情感分析算法
-                positive_count = sum(title_lower.count(kw) for kw in positive_keywords)
-                negative_count = sum(title_lower.count(kw) for kw in negative_keywords)
-                
-                sentiment = "中性"
-                if positive_count > negative_count:
-                    sentiment = "正面"
-                elif negative_count > positive_count:
-                    sentiment = "负面"
                 
                 try:
                     publish_date = datetime.fromtimestamp(item.get('datetime', 0)).strftime('%Y-%m-%d %H:%M')
@@ -255,10 +244,7 @@ def get_news(ticker: str) -> List[Dict]:
                     'title': title,
                     'link': item.get('url', ''),
                     'publish_date': publish_date,
-                    'sentiment': sentiment,
-                    'source': item.get('source', 'Unknown'),
-                    'summary': item.get('summary', title[:150] + '...' if len(title) > 150 else title),
-                    'source_api': 'Finnhub'
+                    'source': item.get('source', 'Unknown')
                 })
             
             # 如果Finnhub返回了新闻，直接返回
@@ -276,22 +262,11 @@ def get_news(ticker: str) -> List[Dict]:
         yf_news = stock.news
         
         if yf_news:
-            positive_keywords = ['positive', 'bullish', 'surge', 'gain', 'up', 'buy', 'strong', 'growth', 'beat', 'increase']
-            negative_keywords = ['negative', 'bearish', 'drop', 'loss', 'down', 'sell', 'weak', 'decline', 'miss', 'decrease', 'cut']
+            # 只保留最新的10条新闻
+            yf_news = sorted(yf_news, key=lambda x: x.get('providerPublishTime', 0), reverse=True)[:10]
             
             for item in yf_news:
                 title = item.get('title', '')
-                title_lower = title.lower()
-                
-                # 情感分析
-                positive_count = sum(title_lower.count(kw) for kw in positive_keywords)
-                negative_count = sum(title_lower.count(kw) for kw in negative_keywords)
-                
-                sentiment = "中性"
-                if positive_count > negative_count:
-                    sentiment = "正面"
-                elif negative_count > positive_count:
-                    sentiment = "负面"
                 
                 # 发布时间
                 pub_time = item.get('providerPublishTime')
@@ -300,21 +275,11 @@ def get_news(ticker: str) -> List[Dict]:
                 else:
                     publish_date = "未知时间"
                 
-                # 图片URL
-                image_url = None
-                if 'thumbnail' in item and item['thumbnail'].get('resolutions'):
-                    resolutions = item['thumbnail']['resolutions']
-                    if resolutions:
-                        image_url = resolutions[0].get('url')
-                
                 news_list.append({
                     'title': title,
                     'link': item.get('link', ''),
                     'publish_date': publish_date,
-                    'sentiment': sentiment,
-                    'source': item.get('publisher', '未知来源'),
-                    'summary': item.get('summary', title[:150] + '...' if len(title) > 150 else title),
-                    'source_api': 'Yahoo Finance'
+                    'source': item.get('publisher', '未知来源')
                 })
             
             if news_list:
@@ -341,28 +306,20 @@ def get_news(ticker: str) -> List[Dict]:
             root = ET.fromstring(response.content)
             items = root.findall('.//item')
             
-            # 最多获取10条新闻
-            for item in items[:10]:
+            # 只保留最新的10条新闻
+            items = items[:10]
+            
+            for item in items:
                 title = item.find('title').text if item.find('title') is not None else "无标题"
                 link = item.find('link').text if item.find('link') is not None else "#"
                 pub_date = item.find('pubDate').text if item.find('pubDate') is not None else "未知时间"
                 source = item.find('source').text if item.find('source') is not None else "未知来源"
                 
-                # 简单的情感分析
-                sentiment = "中性"
-                if any(word in title.lower() for word in ['涨', '升', '利好', '增长', '盈利']):
-                    sentiment = "正面"
-                elif any(word in title.lower() for word in ['跌', '降', '利空', '亏损', '下滑']):
-                    sentiment = "负面"
-                
                 news_list.append({
                     'title': title,
                     'link': link,
                     'publish_date': pub_date,
-                    'sentiment': sentiment,
-                    'source': source,
-                    'summary': title[:150] + '...' if len(title) > 150 else title,
-                    'source_api': 'Google News'
+                    'source': source
                 })
             
             if news_list:
@@ -988,23 +945,32 @@ def render_news_page(ticker: str):
     
     # 添加新闻刷新按钮
     if st.button("🔄 刷新新闻数据", key="refresh_news"):
-        st.cache_data.clear()
+        # 清除缓存并重新加载
+        get_news.clear()
         st.rerun()
     
     if not news_list:
-        st.warning("暂无相关新闻")
+        st.warning("⚠️ 无法获取相关新闻，请稍后再试")
         return
     
-    # 简化新闻展示 - 仅显示标题和链接
-    st.markdown("### 新闻列表")
+    # 只显示标题、时间和外链
+    st.markdown("### 最新10条新闻")
     
-    # 创建简单的表格展示
-    for i, news in enumerate(news_list):
-        st.markdown(f"{i+1}. **{news['title']}**")
-        st.markdown(f"   - 时间: {news['publish_date']}")
-        st.markdown(f"   - 来源: {news['source']}")
-        st.markdown(f"   - 链接: [{news['link']}]({news['link']})")
-        st.markdown("---")
+    # 创建简单的卡片式布局
+    for news in news_list:
+        # 创建卡片容器
+        with st.container():
+            # 标题和时间在同一行
+            col1, col2 = st.columns([4, 1])
+            col1.subheader(news['title'])
+            col2.caption(f"📅 {news['publish_date']}")
+            
+            # 来源和链接
+            st.markdown(f"来源: **{news['source']}**")
+            st.markdown(f"[阅读原文 ↗]({news['link']})")
+            
+            # 分隔线
+            st.divider()
 
 # -------------------- 回调函数 --------------------
 def update_current_ticker():
