@@ -369,6 +369,26 @@ def calculate_support_resistance(close: pd.Series) -> Tuple[float, float]:
     recent_data = close.tail(20)
     return recent_data.min(), recent_data.max()
 
+def calculate_volatility(close: pd.Series, period: int = 20) -> float:
+    """计算历史波动率"""
+    if len(close) < period:
+        return 0.0
+    returns = close.pct_change().dropna()
+    volatility = returns.rolling(period).std().iloc[-1] * np.sqrt(252)  # 年化波动率
+    return volatility
+
+def calculate_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> float:
+    """计算平均真实波幅(ATR)"""
+    if len(high) < period:
+        return 0.0
+    tr = pd.DataFrame(index=high.index)
+    tr['h-l'] = high - low
+    tr['h-pc'] = abs(high - close.shift(1))
+    tr['l-pc'] = abs(low - close.shift(1))
+    tr['tr'] = tr[['h-l', 'h-pc', 'l-pc']].max(axis=1)
+    atr = tr['tr'].rolling(period).mean().iloc[-1]
+    return atr
+
 # -------------------- AI分析函数 --------------------
 @st.cache_data(ttl=600)
 def get_sentiment(ticker: str) -> str:
@@ -412,48 +432,63 @@ def get_investment_advice(ticker: str, hist: pd.DataFrame, info: dict) -> Tuple[
         pb_ratio = info.get('priceToBook', 0)
         dividend_yield = info.get('dividendYield', 0) * 100 if info.get('dividendYield') else 0
         
+        # 计算波动率
+        volatility = calculate_volatility(hist['Close'])
+        atr = calculate_atr(hist['High'], hist['Low'], hist['Close'])
+        
+        # 计算精确价格范围
+        def calculate_precise_price_range(base_price, volatility_factor=0.5):
+            """根据波动率计算精确价格范围"""
+            # 波动率调整因子 (0.3-0.7之间)
+            volatility_adjustment = max(0.3, min(0.7, volatility_factor * (1 + volatility)))
+            price_range = atr * volatility_adjustment
+            return [
+                max(0, base_price - price_range),
+                base_price + price_range
+            ]
+        
         # 短期建议 (1周内) - 基于技术指标
         short_term = ""
         short_term_price = []
         if rsi < 30:
             short_term = "短期买入机会：RSI超卖，可能存在反弹机会"
-            short_term_price = [support * 0.98, support * 1.02]  # 支撑位附近
+            short_term_price = calculate_precise_price_range(support, 0.4)
         elif rsi > 70:
             short_term = "短期谨慎：RSI超买，可能有回调风险"
-            short_term_price = [support * 0.95, support]  # 等待回调到支撑位
+            short_term_price = calculate_precise_price_range(support, 0.5)
         else:
             short_term = "短期中性：技术指标未显示明显信号"
-            short_term_price = [support, resistance]  # 在支撑位和阻力位之间
+            short_term_price = calculate_precise_price_range(current_price, 0.6)
             
         # 中期建议 (1-3个月) - 结合技术和基本面
         medium_term = ""
         medium_term_price = []
         if macd > signal and sentiment == "正面":
             medium_term = "中期看涨：MACD金叉形成，市场情绪积极"
-            medium_term_price = [ma_medium * 0.98, ma_medium * 1.05]  # 20日均线附近
+            medium_term_price = calculate_precise_price_range(ma_medium, 0.4)
         elif macd < signal and sentiment == "负面":
             medium_term = "中期谨慎：MACD死叉形成，市场情绪谨慎"
-            medium_term_price = [ma_medium * 0.95, ma_medium]  # 20日均线下方
+            medium_term_price = calculate_precise_price_range(ma_medium * 0.98, 0.5)
         else:
             medium_term = "中期中性：技术指标和市场情绪未形成明显趋势"
-            medium_term_price = [support, resistance]  # 在支撑位和阻力位之间
+            medium_term_price = calculate_precise_price_range(ma_medium, 0.6)
             
         # 长期建议 (6个月以上) - 基于基本面和长期趋势
         long_term = ""
         long_term_price = []
         if current_price > ma_long and pe_ratio < 25 and pb_ratio < 3:
             long_term = "长期看涨：股价位于长期均线之上，估值合理"
-            long_term_price = [ma_long * 0.95, ma_long * 1.10]  # 长期均线附近
+            long_term_price = calculate_precise_price_range(ma_long * 0.98, 0.3)
         elif current_price < ma_long and pe_ratio > 30 and pb_ratio > 5:
             long_term = "长期谨慎：股价低于长期均线，估值偏高"
-            long_term_price = [ma_long * 0.85, ma_long * 0.95]  # 长期均线下方
+            long_term_price = calculate_precise_price_range(ma_long * 0.95, 0.5)
         else:
             long_term = "长期中性：基本面和技术面未显示明显优势或风险"
-            long_term_price = [ma_long * 0.90, ma_long * 1.05]  # 长期均线附近
+            long_term_price = calculate_precise_price_range(ma_long, 0.4)
             
         # 添加详细分析
-        short_term += f"\n- RSI: {rsi:.2f}, 支撑位: {support:.2f}, 阻力位: {resistance:.2f}"
-        medium_term += f"\n- MACD: {macd:.4f}, Signal: {signal:.4f}, 市场情绪: {sentiment}"
+        short_term += f"\n- RSI: {rsi:.2f}, 支撑位: {support:.2f}, 阻力位: {resistance:.2f}, 波动率: {volatility:.2%}"
+        medium_term += f"\n- MACD: {macd:.4f}, Signal: {signal:.4f}, 市场情绪: {sentiment}, ATR: {atr:.2f}"
         long_term += f"\n- 市盈率: {pe_ratio:.2f}, 市净率: {pb_ratio:.2f}, 股息率: {dividend_yield:.2f}%"
             
         return short_term, medium_term, long_term, [
@@ -469,6 +504,116 @@ def get_investment_advice(ticker: str, hist: pd.DataFrame, info: dict) -> Tuple[
             "长期建议：数据不足，无法生成建议",
             [[0, 0], [0, 0], [0, 0]]
         )
+
+def get_hedge_advice(ticker: str, hist: pd.DataFrame, info: dict, quantity: int, cost_price: float) -> str:
+    """获取对冲建议，包括期权策略"""
+    try:
+        if quantity <= 0:
+            return "您没有持仓，无需对冲建议"
+            
+        # 获取当前价格
+        current_price = info.get('currentPrice', 0)
+        if current_price <= 0:
+            return "无法获取当前价格，无法生成对冲建议"
+            
+        # 计算盈亏情况
+        profit_percent = ((current_price - cost_price) / cost_price) * 100 if cost_price > 0 else 0
+        profit_value = (current_price - cost_price) * quantity
+        
+        # 计算波动率
+        volatility = calculate_volatility(hist['Close'])
+        atr = calculate_atr(hist['High'], hist['Low'], hist['Close'])
+        
+        # 获取市场情绪
+        sentiment = get_sentiment(ticker)
+        
+        # 计算技术指标
+        rsi = calculate_rsi(hist['Close'])
+        macd, signal = calculate_macd(hist['Close'])
+        
+        # 基本对冲建议
+        advice = ""
+        
+        # 根据盈亏情况提供建议
+        if profit_percent >= 20:
+            advice += "📈 您当前持仓盈利显著（{:.2f}%），考虑部分获利了结或对冲保护收益。\n".format(profit_percent)
+            advice += "📊 推荐策略：买入看跌期权保护盈利，或卖出备兑看涨期权增加收益。\n"
+        elif profit_percent <= -10:
+            advice += "📉 您当前持仓亏损（{:.2f}%），考虑风险管理或降低持仓成本。\n".format(profit_percent)
+            advice += "📊 推荐策略：卖出虚值看跌期权降低持仓成本，或买入看涨期权对冲下行风险。\n"
+        else:
+            advice += "📊 您当前持仓盈亏平衡（{:.2f}%），考虑中性策略管理风险。\n".format(profit_percent)
+            advice += "📊 推荐策略：卖出宽跨式期权组合收取权利金，或买入跨式期权捕捉波动。\n"
+        
+        # 根据波动率提供建议
+        if volatility > 0.3:
+            advice += "\n⚠️ 当前市场波动率较高（{:.2%}），建议加强风险管理。".format(volatility)
+            advice += "\n📊 推荐策略：买入保护性期权或采用delta中性策略。"
+        elif volatility < 0.15:
+            advice += "\nℹ️ 当前市场波动率较低（{:.2%}），适合卖出期权策略。".format(volatility)
+            advice += "\n📊 推荐策略：卖出备兑看涨期权或卖出看跌期权收取权利金。"
+        else:
+            advice += "\nℹ️ 当前市场波动率适中（{:.2%}），适合中性策略。".format(volatility)
+        
+        # 根据技术指标提供建议
+        if rsi > 70 and macd < signal:
+            advice += "\n⚠️ 技术指标显示超买信号，短期可能有回调风险。"
+            advice += "\n📊 推荐策略：买入看跌期权保护持仓，或卖出虚值看涨期权。"
+        elif rsi < 30 and macd > signal:
+            advice += "\nℹ️ 技术指标显示超卖信号，短期可能有反弹机会。"
+            advice += "\n📊 推荐策略：卖出看跌期权收取权利金，或买入看涨期权捕捉反弹。"
+        
+        # 具体期权策略建议
+        advice += "\n\n### 具体期权策略建议："
+        
+        # 根据持仓数量计算期权合约数
+        contracts = max(1, quantity // 100)  # 每100股对应1份期权合约
+        
+        if profit_percent >= 20:
+            # 盈利较多时保护策略
+            advice += f"\n1. **买入保护性看跌期权**"
+            advice += f"\n   - 买入 {contracts} 份行权价为当前价格90%的看跌期权"
+            advice += f"\n   - 保护持仓价值，限制下行风险"
+            
+            advice += f"\n2. **备兑看涨期权策略**"
+            advice += f"\n   - 卖出 {contracts} 份行权价为当前价格110%的看涨期权"
+            advice += f"\n   - 获取额外收益，同时锁定部分利润"
+        elif profit_percent <= -10:
+            # 亏损较多时降低成本策略
+            advice += f"\n1. **卖出看跌期权策略**"
+            advice += f"\n   - 卖出 {contracts} 份行权价为当前价格90%的看跌期权"
+            advice += f"\n   - 收取权利金降低持仓成本"
+            
+            advice += f"\n2. **风险逆转策略**"
+            advice += f"\n   - 卖出虚值看跌期权 + 买入虚值看涨期权"
+            advice += f"\n   - 降低持仓成本同时保留上行潜力"
+        else:
+            # 中性策略
+            advice += f"\n1. **卖出宽跨式策略**"
+            advice += f"\n   - 卖出 {contracts} 份行权价为当前价格110%的看涨期权"
+            advice += f"\n   - 卖出 {contracts} 份行权价为当前价格90%的看跌期权"
+            advice += f"\n   - 在稳定市场中收取双倍权利金"
+            
+            advice += f"\n2. **铁鹰式策略**"
+            advice += f"\n   - 同时卖出价内看跌和看涨期权 + 买入更价外期权"
+            advice += f"\n   - 限制风险的同时获得稳定收益"
+        
+        # 添加综合分析因素
+        advice += "\n\n### 综合分析因素："
+        advice += f"\n- 当前价格: {current_price:.2f}"
+        advice += f"\n- 持仓成本: {cost_price:.2f}"
+        advice += f"\n- 持仓数量: {quantity}"
+        advice += f"\n- 盈亏情况: {profit_value:.2f} ({profit_percent:.2f}%)"
+        advice += f"\n- 波动率: {volatility:.2%}"
+        advice += f"\n- ATR: {atr:.2f}"
+        advice += f"\n- RSI: {rsi:.2f}"
+        advice += f"\n- MACD: {macd:.4f}/{signal:.4f}"
+        advice += f"\n- 市场情绪: {sentiment}"
+        
+        return advice
+    except Exception as e:
+        logger.error(f"生成对冲建议失败: {e}")
+        return "无法生成对冲建议，请检查输入数据"
 
 # -------------------- 热门股票函数（增强版） --------------------
 @st.cache_data(ttl=3600)
@@ -790,17 +935,23 @@ def render_technical_page(ticker: str):
     rsi = calculate_rsi(hist['Close'])
     macd, signal = calculate_macd(hist['Close'])
     support, resistance = calculate_support_resistance(hist['Close'])
+    volatility = calculate_volatility(hist['Close'])
+    atr = calculate_atr(hist['High'], hist['Low'], hist['Close'])
     
-    col1, col2 = st.columns(2)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("RSI(14)", f"{rsi:.2f}", "超卖" if rsi < 30 else "超买" if rsi > 70 else "正常")
     col2.metric("MACD", f"{macd:.4f} / {signal:.4f}", "看涨" if macd > signal else "看跌")
+    col3.metric("波动率", f"{volatility:.2%}", "高波动" if volatility > 0.3 else "低波动" if volatility < 0.15 else "中波动")
+    col4.metric("ATR(14)", f"{atr:.2f}")
     
     tech_data = {
-        "指标": ["支撑位", "阻力位", "RSI状态", "MACD状态"],
+        "指标": ["支撑位", "阻力位", "RSI状态", "MACD状态", "波动率", "ATR"],
         "数值/描述": [
             f"{support:.2f}", f"{resistance:.2f}",
             "超卖" if rsi < 30 else "超买" if rsi > 70 else "正常",
-            "看涨" if macd > signal else "看跌"
+            "看涨" if macd > signal else "看跌",
+            f"{volatility:.2%}",
+            f"{atr:.2f}"
         ]
     }
     st.dataframe(pd.DataFrame(tech_data), hide_index=True)
@@ -843,8 +994,16 @@ def render_advice_page(ticker: str):
     current_price = info.get('currentPrice', 0)
     currency = info.get('currency', 'USD')
     
+    # 持仓信息输入
+    st.sidebar.markdown("### 📦 持仓信息")
+    quantity = st.sidebar.number_input("持有数量", min_value=0, value=0, step=100)
+    cost_price = st.sidebar.number_input("成本价格", min_value=0.0, value=0.0, step=0.1)
+    
     # 获取分阶段投资建议和买入价格范围
     short_term, medium_term, long_term, price_ranges = get_investment_advice(processed_ticker, hist, info)
+    
+    # 获取对冲建议
+    hedge_advice = get_hedge_advice(processed_ticker, hist, info, quantity, cost_price)
     
     st.title(f"🎯 {processed_ticker} 投资建议")
     st.caption(f"分析时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -853,25 +1012,54 @@ def render_advice_page(ticker: str):
     st.metric("当前价格", f"{current_price:.2f} {currency}")
     
     # 创建选项卡布局
-    tab1, tab2, tab3 = st.tabs(["短期建议 (1周内)", "中期建议 (1-3个月)", "长期建议 (6个月以上)"])
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "短期建议 (1周内)", "中期建议 (1-3个月)", 
+        "长期建议 (6个月以上)", "持仓优化建议"
+    ])
     
     with tab1:
         st.subheader("短期投资建议")
         st.info(short_term)
         st.markdown(f"**建议买入价格范围:** `{price_ranges[0][0]:.2f} - {price_ranges[0][1]:.2f} {currency}`")
+        st.markdown("**关键因素:** RSI指标、短期支撑阻力位、市场情绪")
         
     with tab2:
         st.subheader("中期投资建议")
         st.info(medium_term)
         st.markdown(f"**建议买入价格范围:** `{price_ranges[1][0]:.2f} - {price_ranges[1][1]:.2f} {currency}`")
+        st.markdown("**关键因素:** MACD指标、市场情绪、基本面趋势")
         
     with tab3:
         st.subheader("长期投资建议")
         st.info(long_term)
         st.markdown(f"**建议买入价格范围:** `{price_ranges[2][0]:.2f} - {price_ranges[2][1]:.2f} {currency}`")
+        st.markdown("**关键因素:** 估值水平、长期趋势、基本面质量")
+        
+    with tab4:
+        st.subheader("持仓优化建议")
+        st.markdown("### 📊 持仓对冲建议")
+        st.info(hedge_advice)
+        st.markdown("### 📝 综合分析因素")
+        st.markdown("""
+        - **市场波动性**: 高波动性市场需要更积极的对冲策略
+        - **技术指标**: RSI、MACD等指标显示市场短期方向
+        - **持仓盈亏**: 盈利头寸可考虑获利了结，亏损头寸需风险管理
+        - **期权策略**: 根据风险偏好选择保护性或收益增强策略
+        - **时间因素**: 短期事件（财报、政策）可能影响策略选择
+        - **整体市场趋势**: 大盘走势影响个股表现
+        """)
     
     # 添加风险提示
-    st.warning("⚠️ 投资有风险，以上建议仅供参考。实际决策请结合更多因素综合分析。")
+    st.warning("""
+    ⚠️ **投资决策综合考量因素**  
+    1. 宏观经济环境（利率、通胀、GDP增长）  
+    2. 行业趋势与竞争格局  
+    3. 公司基本面（盈利能力、负债水平、现金流）  
+    4. 技术面指标（趋势、支撑/阻力位）  
+    5. 市场情绪与资金流向  
+    6. 重大事件风险（财报、政策变化、地缘政治）  
+    以上建议仅供参考，实际决策需结合个人风险承受能力
+    """)
 
 def render_trending_page():
     st.title("🌟 美股投资推荐")
